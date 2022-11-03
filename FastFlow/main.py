@@ -40,7 +40,15 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     )
 
 
-def build_test_data_loader(args, config):
+def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
+    """
+    Args:
+        args: ArgumentParserで受け取った引数を格納するNamespaceインスタンス
+        config: 事前学習済みモデルの設定ファイル(yaml形式)から読み込んだ情報を格納する辞書
+
+    Returns:
+        テストデータのDataloader
+    """
     test_dataset = dataset.MVTecDataset(
         root=args.data,
         category=args.category,
@@ -56,7 +64,15 @@ def build_test_data_loader(args, config):
     )
 
 
-def build_model(config):
+def build_model(config: dict) -> torch.nn.Module:
+    """
+    Args:
+        config: 事前学習済みモデルの設定ファイル(yaml形式)から読み込んだ情報を格納する辞書
+
+    Returns:
+        FastFlowのインスタンス
+    """
+
     model = fastflow.FastFlow(
         backbone_name=config["backbone_name"],
         flow_steps=config["flow_step"],
@@ -64,6 +80,8 @@ def build_model(config):
         conv3x3_only=config["conv3x3_only"],
         hidden_ratio=config["hidden_ratio"],
     )
+
+    # 学習可能なパラメータの数を取得
     print(
         "Model A.D. Param#: {}".format(
             sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -72,13 +90,28 @@ def build_model(config):
     return model
 
 
-def build_optimizer(model):
+def build_optimizer(model) -> torch.optim.Optimizer:
+    """Optimizerをビルドする．学習率や重み減衰のパラメータはconstants.pyで指定．
+    """
     return torch.optim.Adam(
         model.parameters(), lr=const.LR, weight_decay=const.WEIGHT_DECAY
     )
 
 
-def train_one_epoch(dataloader, model, optimizer, epoch):
+def train_one_epoch(
+        dataloader: torch.utils.data.DataLoader,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        epoch: int
+    ):
+    """1エポック訓練する．
+
+    Args:
+        dataloader: 訓練セットのデータローダ
+        model: FastFlowのインスタンス
+        optimizer: Optimizerのインスタンス
+        epoch: 何エポック目か
+    """
     model.train()
     loss_meter = utils.AverageMeter()
     for step, data in enumerate(dataloader):
