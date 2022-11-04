@@ -5,7 +5,6 @@ Pytorchのtorch.utils.data APIを使用．詳細は公式チュートリアル[h
 
 import os
 from glob import glob
-from typing import *
 
 import torch
 import torch.utils.data
@@ -53,7 +52,7 @@ class MVTecDataset(torch.utils.data.Dataset):
 
         self.is_train = is_train
 
-    def __getitem__(self, index) -> Union[torch.Tensor, (torch.Tensor, torch.Tensor)]:
+    def __getitem__(self, index):
         """
         データセットからindexで指定されたデータを取得する．dataset[idx]のようにリストから値を取得するように扱える．
         Args:

@@ -83,8 +83,8 @@ def build_model(config: dict) -> torch.nn.Module:
 
     # 学習可能なパラメータの数を取得
     print(
-        "Model A.D. Param#: {}".format(
-            sum(p.numel() for p in model.parameters() if p.requires_grad)
+        "Total model Param#: {}[MB]".format(
+            sum(p.numel() for p in model.parameters())/1e+6
         )
     )
     return model
@@ -112,17 +112,24 @@ def train_one_epoch(
         optimizer: Optimizerのインスタンス
         epoch: 何エポック目か
     """
+
+    # 訓練モードに設定
     model.train()
+    # 1epoch中におけるlossの平均を計算
     loss_meter = utils.AverageMeter()
+
+
     for step, data in enumerate(dataloader):
         # forward
         data = data.cuda()
         ret = model(data)
         loss = ret["loss"]
+
         # backward
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         # log
         loss_meter.update(loss.item())
         if (step + 1) % const.LOG_INTERVAL == 0 or (step + 1) == len(dataloader):
@@ -133,13 +140,24 @@ def train_one_epoch(
             )
 
 
-def eval_once(dataloader, model):
+def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module):
+    """modelを評価する
+
+    Args:
+        dataloader: テストセットのdataloaderインスタンス
+        model: modelインスタンス
+    """
+    # モデルを評価モードに設定
     model.eval()
     auroc_metric = metrics.ROC_AUC()
+
+    # Anomaly_mapよりAUROCを計算
     for data, targets in dataloader:
         data, targets = data.cuda(), targets.cuda()
+
         with torch.no_grad():
             ret = model(data)
+
         outputs = ret["anomaly_map"].cpu().detach()
         outputs = outputs.flatten()
         targets = targets.flatten()
@@ -149,13 +167,20 @@ def eval_once(dataloader, model):
 
 
 def train(args):
+    """モデルを訓練する
+    Args:
+        args: ArgumentParserで受け取った引数
+    """
+
+    # checkpointを格納するディレクトリの作成
     os.makedirs(const.CHECKPOINT_DIR, exist_ok=True)
     checkpoint_dir = os.path.join(
         const.CHECKPOINT_DIR, "exp%d" % len(os.listdir(const.CHECKPOINT_DIR))
     )
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    config = yaml.safe_load(open(args.config, "r"))
+    with open(args.config, 'r') as yaml_file:
+        config = yaml.safe_load(yaml_file)
     model = build_model(config)
     optimizer = build_optimizer(model)
 
@@ -164,9 +189,15 @@ def train(args):
     model.cuda()
 
     for epoch in range(const.NUM_EPOCHS):
+
+        # パラメータを更新
         train_one_epoch(train_dataloader, model, optimizer, epoch)
+
+        # 一定間隔ごとにテストデータ全てを使い，性能を評価(この性能によって訓練エポックを変えると，汎化性能が楽観的な評価になる)
         if (epoch + 1) % const.EVAL_INTERVAL == 0:
             eval_once(test_dataloader, model)
+
+        # 一定間隔ごとにモデルをsave
         if (epoch + 1) % const.CHECKPOINT_INTERVAL == 0:
             torch.save(
                 {
@@ -179,16 +210,33 @@ def train(args):
 
 
 def evaluate(args):
-    config = yaml.safe_load(open(args.config, "r"))
+    """モデルの性能を評価する.
+    Args:
+        args: ArgumentParserが受けとったコマンドライン引数
+    """
+    with open(args.config, 'r') as yaml_file:
+        config = yaml.safe_load(yaml_file)
+
+    # モデルのビルド
     model = build_model(config)
+
+    # モデルの状態をロード
     checkpoint = torch.load(args.checkpoint)
     model.load_state_dict(checkpoint["model_state_dict"])
+
+    # テストセットを作成
     test_dataloader = build_test_data_loader(args, config)
+
+    # モデルを評価
     model.cuda()
     eval_once(test_dataloader, model)
 
 
 def parse_args():
+    """ArgumentParseインスタンスを作成し，コマンドライン引数を読み込む．
+    Returns:
+        args
+    """
     parser = argparse.ArgumentParser(description="Train FastFlow_org on MVTec-AD dataset")
     parser.add_argument(
         "-cfg", "--config", type=str, required=True, help="path to config file"
