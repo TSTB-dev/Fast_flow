@@ -1,7 +1,7 @@
 """
 FastFlowのモデル定義スクリプト.
 
-NormalizinFlowの実装にFrEIAというフレームワークを用いている．詳細はこちら[https://vislearn.github.io/FrEIA/_build/html/index.html]
+NormalizingFlowの実装にFrEIAというフレームワークを用いている．詳細はこちら[https://vislearn.github.io/FrEIA/_build/html/index.html]
 timmは事前学習済みモデルを利用するためのライブラリ．詳細はこちら[https://github.com/rwightman/pytorch-image-models]
 """
 
