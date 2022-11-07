@@ -3,12 +3,16 @@
 """
 
 import argparse
-from argparse import ArgumentParser
+import datetime
+import yaml
 import os
+import pathlib
+import tqdm
 
 import torch
-import yaml
+import matplotlib.pyplot as plt
 from ignite.contrib import metrics
+from torch.utils.tensorboard import SummaryWriter
 
 import constants as const
 import dataset
@@ -25,12 +29,20 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     Returns:
         訓練データのDataloader
     """
-    train_dataset = dataset.MVTecDataset(
-        root=args.data,
-        category=args.category,
-        input_size=config["input_size"],
-        is_train=True,
-    )
+    if args.name == 'mvtec':
+        train_dataset = dataset.MVTecDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=True,
+        )
+    elif args.name == 'jelly':
+        train_dataset = dataset.JellyDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=True,
+        )
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
@@ -49,12 +61,22 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     Returns:
         テストデータのDataloader
     """
-    test_dataset = dataset.MVTecDataset(
-        root=args.data,
-        category=args.category,
-        input_size=config["input_size"],
-        is_train=False,
-    )
+    if args.name == 'mvtec':
+        test_dataset = dataset.MVTecDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=False,
+            is_mask=args.mask,
+        )
+    elif args.name == 'jelly':
+        test_dataset = dataset.JellyDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=False,
+            is_mask=args.mask
+        )
     return torch.utils.data.DataLoader(
         test_dataset,
         batch_size=const.BATCH_SIZE,
@@ -103,7 +125,7 @@ def train_one_epoch(
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         epoch: int
-    ):
+    ) -> float:
     """1エポック訓練する．
 
     Args:
@@ -111,6 +133,9 @@ def train_one_epoch(
         model: FastFlowのインスタンス
         optimizer: Optimizerのインスタンス
         epoch: 何エポック目か
+
+    Returns:
+        1エポックでのlossの平均
     """
 
     # 訓練モードに設定
@@ -139,31 +164,64 @@ def train_one_epoch(
                 )
             )
 
+    return loss_meter.avg
 
-def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module):
-    """modelを評価する
+
+def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, is_mask: bool, train_info: dict = None) -> float:
+    """modelを評価する. 入力画像に対する異常のヒートマップはsave_dir内に保存．
 
     Args:
         dataloader: テストセットのdataloaderインスタンス
         model: modelインスタンス
+        is_mask: 異常箇所のマスクがあるかどうか
+        train_info: 保存先のディレクトリ
+    Returns:
+        auroc: AUROC
     """
     # モデルを評価モードに設定
     model.eval()
     auroc_metric = metrics.ROC_AUC()
+    if train_info:
+        save_dir = train_info['other']['save_dir']
+        image_size = train_info['data']['image_size']
 
     # Anomaly_mapよりAUROCを計算
-    for data, targets in dataloader:
+    image_files = dataloader.dataset.image_files
+
+    idx = 0
+    for data, targets in tqdm.tqdm(dataloader):
         data, targets = data.cuda(), targets.cuda()
+        batch_files = image_files[idx * const.BATCH_SIZE:(idx+1)*const.BATCH_SIZE]
 
         with torch.no_grad():
             ret = model(data)
 
         outputs = ret["anomaly_map"].cpu().detach()
-        outputs = outputs.flatten()
-        targets = targets.flatten()
-        auroc_metric.update((outputs, targets))
+
+        # heatmapを保存
+        if train_info:
+            img_dir = utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap')
+
+        if is_mask:
+            # pixelごとのスコアにより，AUROCを算出．
+            # outputs: (B, 1, H, W) -> (B * 1 * H * W, )
+            # targets: (B, 1, H, W) -> (B * 1 * H * W, )
+            outputs = outputs.flatten()
+            targets = targets.flatten()
+            auroc_metric.update((outputs, targets))
+        else:
+            # imageごとのスコアにより，AUROCを算出
+            # Anomaly_mapを空間方向にわたって平均
+            # outputs: (B, 1, H, W) -> (B, )
+            # targets: (B, )
+            outputs = torch.mean(outputs, dim=[1, 2, 3])
+            auroc_metric.update((outputs, targets))
+
+        idx += 1
+
     auroc = auroc_metric.compute()
     print("AUROC: {}".format(auroc))
+    return auroc
 
 
 def train(args):
@@ -172,30 +230,38 @@ def train(args):
         args: ArgumentParserで受け取った引数
     """
 
-    # checkpointを格納するディレクトリの作成
-    os.makedirs(const.CHECKPOINT_DIR, exist_ok=True)
-    checkpoint_dir = os.path.join(
-        const.CHECKPOINT_DIR, "exp%d" % len(os.listdir(const.CHECKPOINT_DIR))
-    )
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    # logを格納するディレクトリの作成とSummaryWriterの定義
+    log_dir, start_time = utils.create_log_dir("fastflow", args.category)
+    print(f"TensorBoard上で学習状況を確認するには，次のコマンドを実行してください．\n tensorboard --logdir={log_dir} --port 0")
+    writer = SummaryWriter(log_dir)
 
+    # checkpointを格納するディレクトリの作成
+    save_dir = utils.create_save_dir('fastflow', args.category, args.data)
+    ckpt_dir = os.path.join(save_dir, 'ckpt')
+    pathlib.Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
+
+    # backboneのメタ情報を読み込み，モデルをビルド
     with open(args.config, 'r') as yaml_file:
         config = yaml.safe_load(yaml_file)
     model = build_model(config)
     optimizer = build_optimizer(model)
 
+    # dataloaderを作成し，モデルをGPUに転送
     train_dataloader = build_train_data_loader(args, config)
     test_dataloader = build_test_data_loader(args, config)
     model.cuda()
 
+
     for epoch in range(const.NUM_EPOCHS):
 
         # パラメータを更新
-        train_one_epoch(train_dataloader, model, optimizer, epoch)
+        loss = train_one_epoch(train_dataloader, model, optimizer, epoch)
+        writer.add_scalar('Loss/train', loss, epoch + 1)
 
         # 一定間隔ごとにテストデータ全てを使い，性能を評価(この性能によって訓練エポックを変えると，汎化性能が楽観的な評価になる)
         if (epoch + 1) % const.EVAL_INTERVAL == 0:
-            eval_once(test_dataloader, model)
+            auroc = eval_once(test_dataloader, model, args.mask)
+            writer.add_scalar('AUROC/test', auroc, epoch + 1)
 
         # 一定間隔ごとにモデルをsave
         if (epoch + 1) % const.CHECKPOINT_INTERVAL == 0:
@@ -205,8 +271,10 @@ def train(args):
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 },
-                os.path.join(checkpoint_dir, "%d.pt" % epoch),
+                os.path.join(ckpt_dir, "%d.pt" % epoch),
             )
+    end_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    utils.save_training_info(args, config, start_time, end_time, save_dir, log_dir, ckpt_dir)
 
 
 def evaluate(args):
@@ -216,6 +284,10 @@ def evaluate(args):
     """
     with open(args.config, 'r') as yaml_file:
         config = yaml.safe_load(yaml_file)
+
+    # 訓練のメタ情報の取得
+    info_path = str(pathlib.Path(args.checkpoint).parent.parent / 'train_info.json')
+    train_info = utils.get_training_info(info_path)
 
     # モデルのビルド
     model = build_model(config)
@@ -229,7 +301,7 @@ def evaluate(args):
 
     # モデルを評価
     model.cuda()
-    eval_once(test_dataloader, model)
+    eval_once(test_dataloader, model, args.mask, train_info=train_info)
 
 
 def parse_args():
@@ -241,20 +313,32 @@ def parse_args():
     parser.add_argument(
         "-cfg", "--config", type=str, required=True, help="path to config file"
     )
-    parser.add_argument("--data", type=str, required=True, help="path to mvtec folder")
+    parser.add_argument('--name', type=str, required=True, help='dataset name')
+    parser.add_argument("--data", type=str, required=True, help="path to dataset folder")
     parser.add_argument(
         "-cat",
         "--category",
         type=str,
-        choices=const.MVTEC_CATEGORIES,
         required=True,
         help="category name in mvtec",
     )
+    parser.add_argument('--color', type=str, choices=['rgb', 'gray'])
+    parser.add_argument('--mask', action='store_true', help='whether target mask is exists')
     parser.add_argument("--eval", action="store_true", help="run eval only")
     parser.add_argument(
         "-ckpt", "--checkpoint", type=str, help="path to load checkpoint"
     )
     args = parser.parse_args()
+
+    # 引数のチェック
+    dataset_list = ['mvtec', 'jelly']
+    assert args.name in dataset_list, f'利用可能なデータセットは{dataset_list}です．'
+
+    if args.name == 'mvtec':
+        assert args.category in const.MVTEC_CATEGORIES, f'MVTecにおいて利用可能なクラスは{const.MVTEC_CATEGORIES}です'
+    if args.name == 'jelly':
+        assert args.category in const.JELLY_CATEGORIES, f'Jellyにおいて利用可能なクラスは{const.JELLY_CATEGORIES}です'
+
     return args
 
 

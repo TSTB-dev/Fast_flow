@@ -1,5 +1,3 @@
-CHECKPOINT_DIR = "_fastflow_experiment_checkpoints"
-
 MVTEC_CATEGORIES = [
     "bottle",
     "cable",
@@ -18,6 +16,21 @@ MVTEC_CATEGORIES = [
     "zipper",
 ]
 
+JELLY_CATEGORIES = [
+    'glove1',
+    'glove95',
+    'glove100',
+    'hair1',
+    'hair95',
+    'hair100',
+    'larva4',
+    'larva40',
+    'larva56',
+    'metal99',
+    'metal2',
+    'metal92'
+]
+
 BACKBONE_DEIT = "deit_base_distilled_patch16_384"
 BACKBONE_CAIT = "cait_m48_448"
 BACKBONE_RESNET18 = "resnet18"
@@ -31,7 +44,7 @@ SUPPORTED_BACKBONES = [
 ]
 
 BATCH_SIZE = 32
-NUM_EPOCHS = 500
+NUM_EPOCHS = 50
 LR = 1e-3
 WEIGHT_DECAY = 1e-5
 
