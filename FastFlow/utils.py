@@ -81,7 +81,7 @@ def create_log_dir(model_name: str, class_name: str) -> (str, str):
     return log_dir, now
 
 
-def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, image_size: int, color_mode: str, suffix: str):
+def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, image_size: int, patch_size: int, color_mode: str, suffix: str):
     """画像を指定された形式で保存する
 
     Args:
@@ -89,6 +89,7 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
         anomaly_maps: 各pixelに異常スコアを割り当てた入力画像と同じ形の画像 : (1, H, W)
         filenames: 画像のファイルパスのリスト
         image_size: 画像サイズ
+        patch_size: パッチサイズ(訓練時にパッチ分割されていた場合)
         color_mode: 'rgb'もしくは'gray'
         suffix: 接尾辞, 'heatmap'など
 
@@ -96,8 +97,13 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
         heatmap_dir: ヒートマップを格納するディレクトリのパス
     """
 
-    # (B, 1, H, W) -> (B, H, W, 1)
-    anomaly_maps = anomaly_maps.transpose(1, 3).cpu().numpy()
+
+    if patch_size:
+        # (B, N, 1, P, P) -> (B, N, P, P, 1)
+        anomaly_maps = anomaly_maps.transpose(2, 4).cpu().numpy()
+    else:
+        # (B, 1, H, W) -> (B, H, W, 1)
+        anomaly_maps = anomaly_maps.transpose(1, 3).cpu().numpy()
 
     # 元画像のファイル名にsuffixをつけて新しいファイル名を作成
     img_dir = os.path.join(save_dir, 'images')
@@ -115,9 +121,14 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
         img_org = Image.open(filename)
         img_org = img_org.resize((image_size, image_size))
 
+        # パッチに分割されている場合は，heatmapを結合する．
+        if patch_size:
+            heatmap = convert_patch_to_image(anomaly_maps)
+        else:
+            heatmap = anomaly_maps[idx]
+
         # heatmapと元画像の合成
-        alpha = 0.6
-        heatmap = anomaly_maps[idx]
+        alpha = 0.4
         plt.imshow(heatmap, cmap='jet', alpha=alpha)
         plt.imshow(img_org, alpha=1-alpha)
         plt.savefig(save_path)
@@ -147,6 +158,7 @@ def save_training_info(args, config: dict, start_time: str, end_time: str, save_
             'data_class': args.category,
             'color_mode': args.color,
             'image_size': config['input_size'],
+            'patch_size': args.patchsize
         },
         'hyperparameters': {
             'n_epochs': const.NUM_EPOCHS,
@@ -231,3 +243,31 @@ def get_training_info(info_path: str) -> dict:
     with open(info_path, "r") as f:
         info = json.load(f)
     return info
+
+
+def convert_patch_to_image(patches: torch.Tensor, img_size: int, patch_size: int) -> torch.Tensor:
+    """パッチを結合し，元の画像に戻します．
+    Args:
+        patches: パッチ, (N, P, P)
+        img_size: 元画像のサイズ
+        patch_size: パッチサイズ
+    Returns:
+        image: パッチを結合した元の画像
+    """
+
+    # 入力のチェック
+    assert img_size % patch_size == 0, "元画像のサイズはパッチサイズで割りきれるようにしてください．"
+
+    # 水平方向のパッチ数
+    num_patch_row = img_size // patch_size
+    col_patch_list = []
+    for i in range(num_patch_row):
+        row_patch_list = []
+        for j in range(num_patch_row):
+            row_patch_list.append(patches[i * num_patch_row + j])
+        img_row = torch.concat(row_patch_list, dim=1)
+        col_patch_list.append(img_row)
+    image = torch.stack(row_patch_list, dim=0)
+    image = image.permute([1, 2, 0, 3]).reshape(3, img_size, img_size)
+
+    return image

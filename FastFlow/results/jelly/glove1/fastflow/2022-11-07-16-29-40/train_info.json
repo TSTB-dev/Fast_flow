@@ -1,0 +1,26 @@
+{
+    "data": {
+        "dataset_path": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\data\\jelly",
+        "data_class": "glove1",
+        "color_mode": null,
+        "image_size": 256
+    },
+    "hyperparameters": {
+        "n_epochs": 50,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "weight_decay": 1e-05
+    },
+    "result": {
+        "start_time": "2022-11-07-16-29-40",
+        "end_time": "2022-11-07-16-35-24"
+    },
+    "other": {
+        "log_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\logs\\2022-11-07-16-29-40_glove1_fastflow",
+        "save_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\results\\jelly\\glove1\\fastflow\\2022-11-07-16-29-40",
+        "ckpt_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\results\\jelly\\glove1\\fastflow\\2022-11-07-16-29-40\\ckpt",
+        "log_interval": 10,
+        "eval_interval": 10,
+        "ckpt_interval": 10
+    }
+}

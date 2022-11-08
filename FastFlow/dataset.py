@@ -13,6 +13,8 @@ import torch.utils.data
 from PIL import Image
 from torchvision import transforms
 
+import constants as const
+
 
 class MVTecDataset(torch.utils.data.Dataset):
     """
@@ -119,7 +121,7 @@ class JellyDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.2,
-                 is_mask: bool = False, seed: int = 42):
+                 is_mask: bool = False, patch_size: int = None, seed: int = 42):
         """
         Args:
             root: JellyDatasetのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
@@ -127,7 +129,8 @@ class JellyDataset(torch.utils.data.Dataset):
             input_size: 事前学習済みモデルの入力画像の形．256と指定された場合は(256, 256)の画像を表す．
             is_train: 訓練データかどうか
             test_ratio: 全体のデータのうち，何割を評価用に使うか
-            is_mask: 異常箇所のマスクがあるかどうか．
+            is_mask: 異常箇所のマスクがあるかどうか.
+            patch_size: 画像をパッチに分割する際のパッチサイズ. input_size % patch_size = 0．パッチは重ならないように分割される．
             seed: 正常画像から訓練に使うものと評価に使うものを分割する際のランダムシード
 
         Attributes:
@@ -136,6 +139,7 @@ class JellyDataset(torch.utils.data.Dataset):
             self.label: 評価データにおける異常(1),正常(0)のラベル
             self.target_transform: 正解マスク画像に対するpreprocessing
         """
+        self.patch_size = patch_size
 
         # 事前学習済みモデルに入力するための画像変換を定義
         # ImageNetによる事前学習を想定しているため，ImageNet用の正規化をする．詳細は[https://teratail.com/questions/295871]を参照
@@ -196,6 +200,9 @@ class JellyDataset(torch.utils.data.Dataset):
         image = Image.open(image_file)
         image = self.image_transform(image)
 
+        if self.patch_size:
+            image = patch_split(image, self.patch_size)
+
         if self.is_train:
             return image
 
@@ -209,3 +216,102 @@ class JellyDataset(torch.utils.data.Dataset):
         Returns: データセット内のデータ数
         """
         return len(self.image_files)
+
+
+def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
+    """
+    Args:
+        args: ArgumentParserで受け取った引数を格納するNamespaceインスタンス
+        config: 事前学習済みモデルの設定ファイル(yaml形式)から読み込んだ情報を格納する辞書
+
+    Returns:
+        訓練データのDataloader
+    """
+    if args.name == 'mvtec':
+        train_dataset = MVTecDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=True,
+        )
+    elif args.name == 'jelly':
+        train_dataset = JellyDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=True,
+            patch_size=args.patchsize
+        )
+    return torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=const.BATCH_SIZE,
+        shuffle=True,
+        num_workers=4,
+        drop_last=True,
+    )
+
+
+def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
+    """
+    Args:
+        args: ArgumentParserで受け取った引数を格納するNamespaceインスタンス
+        config: 事前学習済みモデルの設定ファイル(yaml形式)から読み込んだ情報を格納する辞書
+
+    Returns:
+        テストデータのDataloader
+    """
+    if args.name == 'mvtec':
+        test_dataset = MVTecDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=False,
+            is_mask=args.mask,
+        )
+    elif args.name == 'jelly':
+        test_dataset = JellyDataset(
+            root=args.data,
+            category=args.category,
+            input_size=config["input_size"],
+            is_train=False,
+            is_mask=args.mask,
+            patch_size=args.patchsize
+        )
+    return torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=const.BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+        drop_last=False,
+    )
+
+
+def patch_split(img: torch.Tensor, patch_size: int) -> torch.Tensor:
+    """画像を複数のパッチに分割する．
+    Args:
+        img: 入力画像 (C, H, W), H=Wが前提
+        patch_size: パッチサイズ
+
+    Returns:
+        patches: パッチに分割された画像 (N, C, P, P), N: パッチ数
+    """
+
+    # 入力のチェック
+    assert img.shape[1] == img.shape[2], "入力画像の幅と高さは同じにしてください．"
+    assert img.shape[1] % patch_size == 0, "画像サイズはパッチサイズで割りきれるようにしてください．"
+
+    img_size = img.shape[1]
+    num_patch = (img_size ** 2) // (patch_size ** 2)
+    step = patch_size
+
+    # パッチに分割
+    # (C, H, W) -> (C, Nh, Nw, size, size)
+    patches = img.unfold(dimension=1, size=patch_size, step=step)
+    patches = patches.unfold(dimension=2, size=patch_size, step=step)
+
+    # -> (Nh, Nw, C, size, size)
+    patches = patches.permute([1, 2, 0, 3, 4])
+    # -> (Nh*Nw, C, size, size)
+    patches = patches.reshape(-1, 3, patch_size, patch_size)
+
+    return patches
