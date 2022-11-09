@@ -4,6 +4,7 @@ import datetime
 import json
 
 from PIL import Image
+import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
@@ -100,7 +101,7 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
 
     if patch_size:
         # (B, N, 1, P, P) -> (B, N, P, P, 1)
-        anomaly_maps = anomaly_maps.transpose(2, 4).cpu().numpy()
+        anomaly_maps = anomaly_maps.permute([0, 1, 3, 4, 2]).cpu().numpy()
     else:
         # (B, 1, H, W) -> (B, H, W, 1)
         anomaly_maps = anomaly_maps.transpose(1, 3).cpu().numpy()
@@ -123,12 +124,12 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
 
         # パッチに分割されている場合は，heatmapを結合する．
         if patch_size:
-            heatmap = convert_patch_to_image(anomaly_maps)
+            heatmap = convert_patch_to_image(anomaly_maps[idx], image_size, patch_size)
         else:
             heatmap = anomaly_maps[idx]
 
         # heatmapと元画像の合成
-        alpha = 0.4
+        alpha = 0.6
         plt.imshow(heatmap, cmap='jet', alpha=alpha)
         plt.imshow(img_org, alpha=1-alpha)
         plt.savefig(save_path)
@@ -245,10 +246,10 @@ def get_training_info(info_path: str) -> dict:
     return info
 
 
-def convert_patch_to_image(patches: torch.Tensor, img_size: int, patch_size: int) -> torch.Tensor:
+def convert_patch_to_image(patches: np.ndarray, img_size: int, patch_size: int) -> torch.Tensor:
     """パッチを結合し，元の画像に戻します．
     Args:
-        patches: パッチ, (N, P, P)
+        patches: パッチ, (N, P, P, 1)
         img_size: 元画像のサイズ
         patch_size: パッチサイズ
     Returns:
@@ -257,17 +258,17 @@ def convert_patch_to_image(patches: torch.Tensor, img_size: int, patch_size: int
 
     # 入力のチェック
     assert img_size % patch_size == 0, "元画像のサイズはパッチサイズで割りきれるようにしてください．"
+    patches = torch.from_numpy(np.squeeze(patches))  # Ndarray(N, P, P, 1) -> torch.Tensor(N, P, P)
 
     # 水平方向のパッチ数
     num_patch_row = img_size // patch_size
     col_patch_list = []
+
     for i in range(num_patch_row):
         row_patch_list = []
         for j in range(num_patch_row):
-            row_patch_list.append(patches[i * num_patch_row + j])
-        img_row = torch.concat(row_patch_list, dim=1)
-        col_patch_list.append(img_row)
-    image = torch.stack(row_patch_list, dim=0)
-    image = image.permute([1, 2, 0, 3]).reshape(3, img_size, img_size)
-
+            row_patch_list.append(patches[i * num_patch_row + j])  # -> (num_patch_row], P, P)
+        img_row = torch.concat(row_patch_list, dim=1)  # -> (P, image_size)
+        col_patch_list.append(img_row)   # -> (num_patch_row], P, image_size)
+    image = torch.concat(col_patch_list, dim=0)  # -> (image_size, image_size)
     return image

@@ -150,7 +150,7 @@ class FastFlow(nn.Module):
         if isinstance(
             self.feature_extractor, timm.models.vision_transformer.VisionTransformer
         ):
-            # patchに分割し，パッチごとの埋め込みベクトルを獲得
+            # パッチに分割し，パッチごとの埋め込みベクトルを獲得
             # (B, C, H, W) -> (B, N, D), N: パッチ数, D: 埋め込みベクトルの次元
             x = self.feature_extractor.patch_embed(x)
 
