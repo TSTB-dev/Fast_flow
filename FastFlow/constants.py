@@ -28,7 +28,8 @@ JELLY_CATEGORIES = [
     'larva56',
     'metal99',
     'metal2',
-    'metal92'
+    'metal92',
+    'all'
 ]
 
 BACKBONE_DEIT = "deit_base_distilled_patch16_384"
@@ -44,10 +45,10 @@ SUPPORTED_BACKBONES = [
 ]
 
 BATCH_SIZE = 8
-NUM_EPOCHS = 50
+NUM_EPOCHS = 1
 LR = 1e-3
 WEIGHT_DECAY = 1e-5
 
-LOG_INTERVAL = 5
-EVAL_INTERVAL = 10
-CHECKPOINT_INTERVAL = 10
+LOG_INTERVAL = 1
+EVAL_INTERVAL = 1
+CHECKPOINT_INTERVAL = 1

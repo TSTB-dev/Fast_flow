@@ -273,6 +273,8 @@ class FastFlow(nn.Module):
                     anomaly_maps_patch = []
                     for patch in output:
                         # patch: (B, D, P, P)
+                        # 最後の潜在変数z0の分布として多変量標準ガウス分布を仮定している．各潜在変数ベクトルはこの分布からサンプリングされたものなので，確率を計算できる．
+                        # 以下の処理は潜在変数ベクトルがわかっているときに，そこから確率を求める処理．詳細は多変量標準ガウス分布の公式を参照．
                         log_prob = -torch.mean(patch**2, dim=1, keepdim=True) * 0.5
                         prob = torch.exp(log_prob)
                         # -> (B, 1, P, P)

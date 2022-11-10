@@ -52,7 +52,7 @@ def create_save_dir(model_name: str, class_name: str, dataset_path: str) -> str:
         model_name,
         f"{now}"
     )
-    pathlib.Path(save_dir).mkdir(parents=True)
+    pathlib.Path(save_dir).mkdir(parents=True, exist_ok=True)
 
     return save_dir
 

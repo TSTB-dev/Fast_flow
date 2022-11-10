@@ -120,7 +120,7 @@ class JellyDataset(torch.utils.data.Dataset):
     JellyDatasetをロードするためのクラス
     """
 
-    def __init__(self, root: str, category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.2,
+    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1,
                  is_mask: bool = False, patch_size: int = None, seed: int = 42):
         """
         Args:
@@ -153,9 +153,14 @@ class JellyDataset(torch.utils.data.Dataset):
 
         # 正常・異常データのパスのリスト取得
         random.seed(seed)
-        normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
-        anormal_dir = pathlib.Path(os.path.join(root, category, 'NG_Clip'))
-        normal_list = list(normal_dir.glob('*.jpg'))
+        if category == 'all':
+           data_dir = pathlib.Path(root)
+           normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
+        else:
+            normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
+            normal_list = list(normal_dir.glob('*.jpg'))
+
+        anormal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
         anormal_list = list(anormal_dir.glob('*.jpg'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
@@ -238,9 +243,10 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
         train_dataset = JellyDataset(
             root=args.data,
             category=args.category,
+            valid_category=args.valid,
             input_size=config["input_size"],
             is_train=True,
-            patch_size=args.patchsize
+            patch_size=args.patchsize,
         )
     return torch.utils.data.DataLoader(
         train_dataset,
@@ -272,6 +278,7 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
         test_dataset = JellyDataset(
             root=args.data,
             category=args.category,
+            valid_category=args.valid,
             input_size=config["input_size"],
             is_train=False,
             is_mask=args.mask,

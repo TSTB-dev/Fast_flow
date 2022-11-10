@@ -3,8 +3,10 @@ import pathlib
 import tqdm
 
 import torch
-from ignite.contrib import metrics
+from ignite.contrib.metrics import ROC_AUC
 from torch.utils.tensorboard import SummaryWriter
+from sklearn import metrics
+import numpy as np
 
 import constants as const
 import dataset
@@ -25,7 +27,7 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
     """
     # モデルを評価モードに設定
     model.eval()
-    auroc_metric = metrics.ROC_AUC()
+    auroc_metric = ROC_AUC()
     if train_info:
         save_dir = train_info['other']['save_dir']
         image_size = train_info['data']['image_size']
@@ -34,6 +36,8 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
     image_files = dataloader.dataset.image_files
 
     idx = 0
+    targets_list = []
+    preds_list = []
     for data, targets in tqdm.tqdm(dataloader):
         data, targets = data.cuda(), targets.cuda()
         batch_files = image_files[idx * const.BATCH_SIZE:(idx+1)*const.BATCH_SIZE]
@@ -41,6 +45,7 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
         with torch.no_grad():
             ret = model(data)
 
+        # outputsは各pixelについて予測した正常である確率に負を掛けたもの
         outputs = ret["anomaly_map"].cpu().detach()
 
         # heatmapを保存
@@ -64,17 +69,42 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
             if model.patch_size:
                 # outputs: (B, N, 1, P, P) -> (B, )
                 # targets: (B, )
-                outputs = torch.mean(outputs, dim=[1, 2, 3, 4])
+                # パッチごとに異常スコアの平均をとり，それが最大のパッチの異常スコアを最終的なその画像のスコアとして扱う．
+                max_patch_mean = torch.max(torch.mean(outputs, dim=[2, 3, 4]), dim=1)
+                outputs = max_patch_mean.values
+
             else:
                 # outputs: (B, 1, H, W) -> (B, )
                 # targets: (B, )
                 outputs = torch.mean(outputs, dim=[1, 2, 3])
+
+            targets_list.append(targets)
+            preds_list.append(outputs)
             auroc_metric.update((outputs, targets))
 
         idx += 1
 
+    # 結果を評価する．
+    # 全体の予測結果を集約する．predsは正常確率に負を掛けたもののリストであるため，異常確率(scores)に変換する．
+    preds = torch.concat(preds_list, dim=0).cpu().numpy()
+    targets = torch.concat(targets_list, dim=0).cpu().numpy()
+    scores = 1. + preds
+
+    # TPR, FPR, しきい値の計算
+    fpr, tpr, thresholds = metrics.roc_curve(targets, scores)
+    best_thresh_idx = np.argmax(tpr - fpr)  # TPR - FPRが最大になるようなしきい値が最良
+    best_threshold = thresholds[best_thresh_idx]
+    preds_sparse = np.where(scores > best_threshold, 1, 0)  # そのしきい値を用いて異常正常を分類
+
+    # 混同行列，AUCの計算
+    cm = metrics.confusion_matrix(targets, preds_sparse)
+    auc = metrics.auc(fpr, tpr)
+
     auroc = auroc_metric.compute()
     print("AUROC: {}".format(auroc))
+
+    print(f"AUROC(confirm): {auc}")
+    print(f"ConfusionMatrix: \n{cm}")
     return auroc
 
 

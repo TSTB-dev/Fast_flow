@@ -25,8 +25,9 @@ def parse_args():
         "--category",
         type=str,
         required=True,
-        help="category name in mvtec",
+        help="category name in dataset. If 'all' was specified, train FastFlow by using all normal data",
     )
+    parser.add_argument('--valid', type=str, help='validation category')
     parser.add_argument('--color', type=str, choices=['rgb', 'gray'])
     parser.add_argument('-p', '--patchsize', type=int, help='patch size. By default, patch separation will not do')
     parser.add_argument('--mask', action='store_true', help='whether target mask is exists')
@@ -50,6 +51,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.valid is None:
+        args.valid = args.category
     if args.eval:
         evaluate(args)
     else:
