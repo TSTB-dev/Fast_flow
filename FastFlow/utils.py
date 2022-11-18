@@ -82,12 +82,12 @@ def create_log_dir(model_name: str, class_name: str) -> (str, str):
     return log_dir, now
 
 
-def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, image_size: int, patch_size: int, color_mode: str, suffix: str):
+def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, image_size: int, patch_size: int = None, color_mode: str = 'rgb', suffix: str = 'heatmap'):
     """画像を指定された形式で保存する
 
     Args:
         save_dir: 保存先のディレクトリ
-        anomaly_maps: 各pixelに異常スコアを割り当てた入力画像と同じ形の画像 : (1, H, W)
+        anomaly_maps: 各pixelに異常スコアを割り当てた入力画像と同じ形の画像
         filenames: 画像のファイルパスのリスト
         image_size: 画像サイズ
         patch_size: パッチサイズ(訓練時にパッチ分割されていた場合)
@@ -104,7 +104,7 @@ def save_images(save_dir: str, anomaly_maps: torch.Tensor, filenames: list, imag
         anomaly_maps = anomaly_maps.permute([0, 1, 3, 4, 2]).cpu().numpy()
     else:
         # (B, 1, H, W) -> (B, H, W, 1)
-        anomaly_maps = anomaly_maps.transpose(1, 3).cpu().numpy()
+        anomaly_maps = anomaly_maps.permute([0, 2, 3, 1]).cpu().numpy()
 
     # 元画像のファイル名にsuffixをつけて新しいファイル名を作成
     img_dir = os.path.join(save_dir, 'images')
@@ -272,3 +272,18 @@ def convert_patch_to_image(patches: np.ndarray, img_size: int, patch_size: int) 
         col_patch_list.append(img_row)   # -> (num_patch_row], P, image_size)
     image = torch.concat(col_patch_list, dim=0)  # -> (image_size, image_size)
     return image
+
+
+def convert_binary_image():
+    dataset_dir = pathlib.Path('C:\\Users\had-int22\PycharmProjects\Pytorch_AD\data\jelly_mask')
+    class_dirs = list(dataset_dir.iterdir())
+    class_dirs
+
+    for class_dir in class_dirs:
+        data_dir = class_dir / 'NG_Clip_Label'
+        img_files = list(data_dir.glob('*.BMP'))
+        for img_file in tqdm.tqdm(img_files):
+            img_file = str(img_file)
+            img = np.asarray(Image.open(img_file), dtype=np.uint8)
+            img = np.where(img > 0, 255, 0)
+            cv2.imwrite(img_file, img)

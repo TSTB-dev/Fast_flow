@@ -70,16 +70,18 @@ class FastFlow(nn.Module):
         input_size: int,
         conv3x3_only: bool = False,
         hidden_ratio: float = 1.0,
-        patch_size: int = None
+        patch_size: int = None,
+        random_sampling: bool = False,
     ):
         """
         Args:
             backbone_name: 事前学習済みモデルの名称
             flow_steps: Flowの数
             input_size: 入力画像の幅と高さ. H=Wの正方形画像が前提．
-            conv3x3_only: Flow内部の畳み込み層で3x3のカーネルのみを使うかどうか．原論文ではFlow stepごとに1x1と3x3を交互に適用
+            conv3x3_only: Flow内部の畳み込み層で3x3のカーネルのみを使う．原論文ではFlow stepごとに1x1と3x3を交互に適用
             hidden_ratio: 特徴マップのチャンネル数の拡張率.
             patch_size: パッチに分割されている場合のパッチサイズ
+            random_sampling: パッチをランダムに選択して学習する．
         """
         super(FastFlow, self).__init__()
         assert (
@@ -92,9 +94,9 @@ class FastFlow(nn.Module):
         self.patch_size = patch_size
 
         # 事前学習済みモデルの読み込み[ViT]
-        if backbone_name in [const.BACKBONE_CAIT, const.BACKBONE_DEIT]:
+        if backbone_name in [const.BACKBONE_CAIT, const.BACKBONE_DEIT, const.BACKBONE_DEIT_224, const.BACKBONE_DEITS_224, const.BACKBONE_MOBILEVIT_V2]:
             self.feature_extractor = timm.create_model(backbone_name, pretrained=True)
-            channels = [768]
+            channels = [self.feature_extractor.num_features]  # [self.feature_extractor.feature_info[-1]['num_chs']]
             scales = [16]
 
         # 事前学習済みモデルの読み込み[ResNet], timm.create_modelの詳細は[https://rwightman.github.io/pytorch-image-models/feature_extraction/]
@@ -150,47 +152,103 @@ class FastFlow(nn.Module):
         if isinstance(
             self.feature_extractor, timm.models.vision_transformer.VisionTransformer
         ):
-            # パッチに分割し，パッチごとの埋め込みベクトルを獲得
-            # (B, C, H, W) -> (B, N, D), N: パッチ数, D: 埋め込みベクトルの次元
-            x = self.feature_extractor.patch_embed(x)
+            if self.patch_size:
+                # パッチに分割し，パッチごとの埋め込みベクトルを獲得
+                # (B, N_g, C, P, P) -> (B, N_g, D, P, P), N_g: 画像全体をパッチに分割したときのパッチ数, D: 埋め込みベクトルの次元, P: ViT内部でのパッチ分割処理におけるパッチサイズ
+                features = []
+                for i in range(x.shape[1]):
+                    feature = self.feature_extractor.patch_embed(x[:, i])
 
-            # クラストークンのサイズをバッチサイズに合うように拡張
-            # (1, 1, C) -> (B, 1, C)
-            cls_token = self.feature_extractor.cls_token.expand(x.shape[0], -1, -1)
+                    # クラストークンのサイズをバッチサイズに合うように用意
+                    # (1, 1, D) -> (B, 1, D)
+                    cls_token = self.feature_extractor.cls_token.expand(x.shape[0], -1, -1)
 
-            # dist_token(distillation token)がなければ，cls_tokenのみ結合．dist_tokenについてはDeiTの原論文参照[https://arxiv.org/abs/2012.12877]
-            # dist_tokenがない場合，(B, N, D) -> (B, N+1, D). ある場合は(B, N, D) -> (B, N+2, D)
-            if self.feature_extractor.dist_token is None:
-                x = torch.cat((cls_token, x), dim=1)
+                    # dist_token(distillation token)がなければ，cls_tokenのみ結合．dist_tokenについてはDeiTの原論文参照[https://arxiv.org/abs/2012.12877]
+                    # dist_tokenがない場合，(B, N_l, D) -> (B, N_l+1, D). ある場合は(B, N_l, D) -> (B, N_l+2, D)
+                    if self.feature_extractor.dist_token is None:
+                        feature = torch.cat((cls_token, feature), dim=1)
+                    else:
+                        dist_token = self.feature_extractor.dist_token.expand(x.shape[0], -1, -1)
+                        feature = torch.cat((cls_token, feature, dist_token), dim=1)
+
+                    # 位置埋め込み(Positional Encoding), 埋め込み後にdropoutを適用
+                    feature = self.feature_extractor.pos_drop(feature + self.feature_extractor.pos_embed)
+                    for i in range(8):  # 原論文ではDeiTのBlockIndexは7, DeiTはDefault12ブロック
+                        feature = self.feature_extractor.blocks[i](feature)
+
+                    # LayerNormを適用
+                    # (B, N_g, N_l, D) -> (B, N_g, N_l, D)
+                    feature = self.feature_extractor.norm(feature)
+
+                    # トークンを抜き出す.(B, N+2, D) -> (B, N, D)
+                    feature = feature[:, 2:, :]
+                    B, _, D = feature.shape
+
+                    # (B, N, D) -> (B, D, N)
+                    feature = feature.permute(0, 2, 1)
+
+                    # (B, D, N) -> (B, D, Np, Np). Np: 行/列方向のパッチの個数
+                    feature = feature.reshape(B, D, self.input_size // 16, self.input_size // 16)
+                    features.append(feature)
+                features = [torch.stack(features, dim=0).transpose(0, 1)]
+
             else:
-                x = torch.cat(
-                    (
-                        cls_token,
-                        self.feature_extractor.dist_token.expand(x.shape[0], -1, -1),
-                        x,
-                    ),
-                    dim=1,
-                )
+                # パッチに分割し，パッチごとの埋め込みベクトルを獲得
+                # (B, C, H, W) -> (B, N, D), N: パッチ数, D: 埋め込みベクトルの次元
+                x = self.feature_extractor.patch_embed(x)
 
-            # 位置埋め込み(Positional Encoding), 埋め込み後にdropoutを適用
-            x = self.feature_extractor.pos_drop(x + self.feature_extractor.pos_embed)
-            for i in range(8):  # 原論文ではDeiTのBlockIndexは7, DeiTはDefault12ブロック
-                x = self.feature_extractor.blocks[i](x)
+                # クラストークンのサイズをバッチサイズに合うように拡張
+                # (1, 1, C) -> (B, 1, C)
+                cls_token = self.feature_extractor.cls_token.expand(x.shape[0], -1, -1)
 
-            # LayerNormを適用
-            # (B, N, D) -> (B, N, D)
-            x = self.feature_extractor.norm(x)
+                # dist_token(distillation token)がなければ，cls_tokenのみ結合．dist_tokenについてはDeiTの原論文参照[https://arxiv.org/abs/2012.12877]
+                # dist_tokenがない場合，(B, N, D) -> (B, N+1, D). ある場合は(B, N, D) -> (B, N+2, D)
+                if self.feature_extractor.dist_token is None:
+                    x = torch.cat((cls_token, x), dim=1)
+                else:
+                    x = torch.cat(
+                        (
+                            cls_token,
+                            self.feature_extractor.dist_token.expand(x.shape[0], -1, -1),
+                            x,
+                        ),
+                        dim=1,
+                    )
 
-            # トークンを抜き出す.(B, N+2, D) -> (B, N, D)
-            x = x[:, 2:, :]
-            B, _, D = x.shape
+                # 位置埋め込み(Positional Encoding), 埋め込み後にdropoutを適用
+                x = self.feature_extractor.pos_drop(x + self.feature_extractor.pos_embed)
+                for i in range(8):  # 原論文ではDeiTのBlockIndexは7, DeiTはDefault12ブロック
+                    x = self.feature_extractor.blocks[i](x)
 
-            # (B, N, D) -> (B, D, N)
-            x = x.permute(0, 2, 1)
+                # LayerNormを適用
+                # (B, N, D) -> (B, N, D)
+                x = self.feature_extractor.norm(x)
 
-            # (B, D, N) -> (B, D, Np, Np). Np: 行/列方向のパッチの個数
-            x = x.reshape(B, D, self.input_size // 16, self.input_size // 16)
-            features = [x]
+                # トークンを抜き出す.(B, N+2, D) -> (B, N, D)
+                x = x[:, 2:, :]
+                B, _, D = x.shape
+
+                # (B, N, D) -> (B, D, N)
+                x = x.permute(0, 2, 1)
+
+                # (B, D, N) -> (B, D, Np, Np). Np: 行/列方向のパッチの個数
+                x = x.reshape(B, D, self.input_size // 16, self.input_size // 16)
+                features = [x]
+
+        # MobileViTの場合
+        elif isinstance(self.feature_extractor, timm.models.byobnet.ByobNet):
+            # パッチに分割し，パッチごとの埋め込みベクトルを獲得
+            # (B, N_g, C, P, P) -> (B, N_g, D, P, P), N_g: 画像全体をパッチに分割したときのパッチ数, D: 埋め込みベクトルの次元, P: ViT内部でのパッチ分割処理におけるパッチサイズ
+            features = []
+            if self.patch_size:
+                for i in range(x.shape[1]):
+                    # -> (B, D, P, P)
+                    feature = self.feature_extractor.forward_features(x[:, i])
+                    features.append(feature)
+                features = [torch.stack(features, dim=0).transpose(0, 1)]
+            else:
+                feature = self.feature_extractor.forward_features(x)
+                features = [feature]
 
         # 事前学習済みモデルがCaiTの場合
         elif isinstance(self.feature_extractor, timm.models.cait.Cait):
@@ -329,7 +387,8 @@ def build_model(config: dict, args) -> torch.nn.Module:
         input_size=config["input_size"],
         conv3x3_only=config["conv3x3_only"],
         hidden_ratio=config["hidden_ratio"],
-        patch_size=args.patchsize
+        patch_size=args.patchsize,
+        random_sampling=args.random,
     )
 
     # 学習可能なパラメータの数を取得

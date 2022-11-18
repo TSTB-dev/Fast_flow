@@ -1,12 +1,14 @@
 import yaml
 import pathlib
 import tqdm
+import time
 
 import torch
 from ignite.contrib.metrics import ROC_AUC
 from torch.utils.tensorboard import SummaryWriter
 from sklearn import metrics
 import numpy as np
+import matplotlib.pyplot as plt
 
 import constants as const
 import dataset
@@ -14,7 +16,7 @@ import fastflow
 import utils
 
 
-def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, is_mask: bool, train_info: dict = None) -> float:
+def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, is_mask: bool, train_info: dict = None, save_img: bool = False) -> float:
     """modelを評価する. 入力画像に対する異常のヒートマップはsave_dir内に保存．
 
     Args:
@@ -22,9 +24,12 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
         model: modelインスタンス
         is_mask: 異常箇所のマスクがあるかどうか
         train_info: 保存先のディレクトリ
+        save_img: heatmapを保存するかどうか
     Returns:
         auroc: AUROC
     """
+    dataloader, train_dataloader = dataloader
+
     # モデルを評価モードに設定
     model.eval()
     auroc_metric = ROC_AUC()
@@ -38,18 +43,22 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
     idx = 0
     targets_list = []
     preds_list = []
+    elapsed_time_list = []
     for data, targets in tqdm.tqdm(dataloader):
         data, targets = data.cuda(), targets.cuda()
         batch_files = image_files[idx * const.BATCH_SIZE:(idx+1)*const.BATCH_SIZE]
 
         with torch.no_grad():
+            start_time = time.perf_counter()
             ret = model(data)
+            end_time = time.perf_counter()
+            elapsed_time_list.append((end_time - start_time)/const.BATCH_SIZE)
 
         # outputsは各pixelについて予測した正常である確率に負を掛けたもの
         outputs = ret["anomaly_map"].cpu().detach()
 
         # heatmapを保存
-        if train_info:
+        if train_info and save_img:
             if model.patch_size:
                 utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb', suffix='heatmap')
             else:
@@ -70,9 +79,9 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
                 # outputs: (B, N, 1, P, P) -> (B, )
                 # targets: (B, )
                 # パッチごとに異常スコアの平均をとり，それが最大のパッチの異常スコアを最終的なその画像のスコアとして扱う．
-                max_patch_mean = torch.max(torch.mean(outputs, dim=[2, 3, 4]), dim=1)
-                outputs = max_patch_mean.values
-
+                # max_patch_mean = torch.max(torch.mean(outputs, dim=[2, 3, 4]), dim=1)
+                # outputs = max_patch_mean.values
+                outputs = torch.mean(outputs, dim=[1, 2, 3, 4])
             else:
                 # outputs: (B, 1, H, W) -> (B, )
                 # targets: (B, )
@@ -84,7 +93,14 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
 
         idx += 1
 
-    # 結果を評価する．
+    # 推論速度を評価する
+    # 最初のバッチに対する推論はGPUへのロードを含み遅くなるので，省いている．
+    mean = np.mean(elapsed_time_list[1:]) * 1000
+    std = np.std(elapsed_time_list[1:]) * 1000
+    print(f"Mean inference time per image: {mean:.2f}[ms]")
+    print(f"Std inference time per image: {std:.2f}[ms]")
+
+    # 予測性能を評価する．
     # 全体の予測結果を集約する．predsは正常確率に負を掛けたもののリストであるため，異常確率(scores)に変換する．
     preds = torch.concat(preds_list, dim=0).cpu().numpy()
     targets = torch.concat(targets_list, dim=0).cpu().numpy()
@@ -98,12 +114,10 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
 
     # 混同行列，AUCの計算
     cm = metrics.confusion_matrix(targets, preds_sparse)
-    auc = metrics.auc(fpr, tpr)
 
     auroc = auroc_metric.compute()
     print("AUROC: {}".format(auroc))
 
-    print(f"AUROC(confirm): {auc}")
     print(f"ConfusionMatrix: \n{cm}")
     return auroc
 
@@ -133,8 +147,9 @@ def evaluate(args):
 
     # テストセットを作成
     test_dataloader = dataset.build_test_data_loader(args, config)
+    train_dataloader = dataset.build_train_data_loader(args, config)
 
     # モデルを評価
     model.cuda()
-    eval_once(test_dataloader, model, args.mask, train_info=train_info)
+    eval_once(test_dataloader, model, args.mask, train_info=train_info, save_img=args.heatmap)
 

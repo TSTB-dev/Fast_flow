@@ -30,11 +30,13 @@ def parse_args():
     parser.add_argument('--valid', type=str, help='validation category')
     parser.add_argument('--color', type=str, choices=['rgb', 'gray'])
     parser.add_argument('-p', '--patchsize', type=int, help='patch size. By default, patch separation will not do')
-    parser.add_argument('--mask', action='store_true', help='whether target mask is exists')
+    parser.add_argument('--random', action='store_true', help='random patch sampling')
+    parser.add_argument('--mask', action='store_true', help='target mask')
     parser.add_argument("--eval", action="store_true", help="run eval only")
     parser.add_argument(
         "-ckpt", "--checkpoint", type=str, help="path to load checkpoint"
     )
+    parser.add_argument("--heatmap", action='store_true', help='saving heatmap on test images')
     args = parser.parse_args()
 
     # 引数のチェック

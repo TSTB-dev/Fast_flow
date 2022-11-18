@@ -1,4 +1,4 @@
-input_size: 256
+input_size: 1120
 backbone_name: wide_resnet50_2
 flow_step: 8
 hidden_ratio: 1.0

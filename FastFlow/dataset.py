@@ -8,10 +8,13 @@ from glob import glob
 import pathlib
 import random
 
+import numpy as np
+from numpy.random import default_rng
 import torch
 import torch.utils.data
 from PIL import Image
 from torchvision import transforms
+from torchvision.transforms import functional as F, InterpolationMode
 
 import constants as const
 
@@ -121,7 +124,7 @@ class JellyDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1,
-                 is_mask: bool = False, patch_size: int = None, seed: int = 42):
+                 is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
         """
         Args:
             root: JellyDatasetのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
@@ -131,6 +134,7 @@ class JellyDataset(torch.utils.data.Dataset):
             test_ratio: 全体のデータのうち，何割を評価用に使うか
             is_mask: 異常箇所のマスクがあるかどうか.
             patch_size: 画像をパッチに分割する際のパッチサイズ. input_size % patch_size = 0．パッチは重ならないように分割される．
+            random_sampling: パッチ分割した画像をランダムに学習に用いる．ここで，パッチは重なっても良い．
             seed: 正常画像から訓練に使うものと評価に使うものを分割する際のランダムシード
 
         Attributes:
@@ -139,6 +143,8 @@ class JellyDataset(torch.utils.data.Dataset):
             self.label: 評価データにおける異常(1),正常(0)のラベル
             self.target_transform: 正解マスク画像に対するpreprocessing
         """
+        is_train = False  # TODO: ここは修正
+        self.input_size = input_size
         self.patch_size = patch_size
 
         # 事前学習済みモデルに入力するための画像変換を定義
@@ -155,13 +161,13 @@ class JellyDataset(torch.utils.data.Dataset):
         random.seed(seed)
         if category == 'all':
            data_dir = pathlib.Path(root)
-           normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
+           normal_list = list(data_dir.glob('*/OK_Clip/*.BMP'))
         else:
             normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
-            normal_list = list(normal_dir.glob('*.jpg'))
+            normal_list = list(normal_dir.glob('*.BMP'))
 
         anormal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
-        anormal_list = list(anormal_dir.glob('*.jpg'))
+        anormal_list = list(anormal_dir.glob('*.BMP'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
         random.shuffle(normal_list)
@@ -183,10 +189,12 @@ class JellyDataset(torch.utils.data.Dataset):
                 self.target_transform = transforms.Compose(
                     [
                         transforms.Resize(input_size),
-                        transforms.ToTensor(),
                     ]
                 )
+
+        self.is_mask = is_mask
         self.is_train = is_train
+        self.random = random_sampling
 
     def __getitem__(self, index):
         """
@@ -205,15 +213,35 @@ class JellyDataset(torch.utils.data.Dataset):
         image = Image.open(image_file)
         image = self.image_transform(image)
 
-        if self.patch_size:
+        if self.patch_size and not self.is_train:
             image = patch_split(image, self.patch_size)
+        if self.patch_size and self.is_train:
+            image = patch_split(image, self.patch_size, random_sampling=self.random)
 
+        # 訓練時
         if self.is_train:
             return image
 
+        # 評価時[マスクがない場合]
+        if not self.is_mask:
+            return image, self.label[index]
+
+        # 評価時[マスクがある場合]
+        # 正常画像に対する正解マスク画像の作成, targetは二値画像なので形は(1, input_size, input_size)
+        if os.path.dirname(image_file).endswith("OK_Clip"):
+            target = torch.zeros([1, self.input_size, self.input_size])
+
+        # 異常画像に対する正解マスク画像の作成と変換
         else:
-            label = self.label[index]
-            return image, label
+            sep = os.path.sep
+            target = Image.open(
+                str(image_file).replace("NG_Clip", "NG_Clip_Label")
+            )
+            target = np.asarray(target) / 255.
+            target = torch.from_numpy(target).unsqueeze(dim=0)
+            target = F.resize(target, self.input_size, interpolation=InterpolationMode.NEAREST)
+
+        return image, target
 
     def __len__(self):
         """"
@@ -246,7 +274,9 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             valid_category=args.valid,
             input_size=config["input_size"],
             is_train=True,
+            is_mask=args.mask,
             patch_size=args.patchsize,
+            random_sampling=args.random
         )
     return torch.utils.data.DataLoader(
         train_dataset,
@@ -293,11 +323,12 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     )
 
 
-def patch_split(img: torch.Tensor, patch_size: int) -> torch.Tensor:
+def patch_split(img: torch.Tensor, patch_size: int, random_sampling: bool = False) -> torch.Tensor:
     """画像を複数のパッチに分割する．
     Args:
         img: 入力画像 (C, H, W), H=Wが前提
         patch_size: パッチサイズ
+        random_sampling: ランダムにパッチをサンプリングする．この場合はパッチの重なりを許容する．
 
     Returns:
         patches: パッチに分割された画像 (N, C, P, P), N: パッチ数
@@ -307,18 +338,28 @@ def patch_split(img: torch.Tensor, patch_size: int) -> torch.Tensor:
     assert img.shape[1] == img.shape[2], "入力画像の幅と高さは同じにしてください．"
     assert img.shape[1] % patch_size == 0, "画像サイズはパッチサイズで割りきれるようにしてください．"
 
-    img_size = img.shape[1]
-    num_patch = (img_size ** 2) // (patch_size ** 2)
-    step = patch_size
+    if random_sampling:
+        step = const.STEP
+    else:
+        step = patch_size
 
     # パッチに分割
     # (C, H, W) -> (C, Nh, Nw, size, size)
-    patches = img.unfold(dimension=1, size=patch_size, step=step)
-    patches = patches.unfold(dimension=2, size=patch_size, step=step)
+    if random_sampling:
+        patches = img.unfold(dimension=1, size=patch_size, step=step)
+        patches = patches.unfold(dimension=2, size=patch_size, step=step)
+    else:
+        patches = img.unfold(dimension=1, size=patch_size, step=step)
+        patches = patches.unfold(dimension=2, size=patch_size, step=step)
 
     # -> (Nh, Nw, C, size, size)
     patches = patches.permute([1, 2, 0, 3, 4])
     # -> (Nh*Nw, C, size, size)
     patches = patches.reshape(-1, 3, patch_size, patch_size)
+
+    if random_sampling:
+        rng = default_rng()
+        sample_idx = rng.choice(patches.shape[0], size=const.NUM_PATCHES)
+        patches = patches[sample_idx]
 
     return patches

@@ -1,5 +1,5 @@
-input_size: 384
-backbone_name: deit_base_distilled_patch16_384
+input_size: 1120
+backbone_name: deit_small_distilled_patch16_224
 flow_step: 20
 hidden_ratio: 0.16
 conv3x3_only: False

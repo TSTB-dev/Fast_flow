@@ -96,7 +96,7 @@ def train(args):
 
         # 一定間隔ごとにテストデータ全てを使い，性能を評価(この性能によって訓練エポックを変えると，汎化性能が楽観的な評価になる)
         if (epoch + 1) % const.EVAL_INTERVAL == 0:
-            auroc = eval_once(test_dataloader, model, args.mask)
+            auroc = eval_once((test_dataloader, train_dataloader), model, args.mask)
             writer.add_scalar('AUROC/test', auroc, epoch + 1)
 
         # 一定間隔ごとにモデルをsave
