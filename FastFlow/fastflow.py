@@ -5,6 +5,8 @@ NormalizingFlowの実装にFrEIAというフレームワークを用いている
 timmは事前学習済みモデルを利用するためのライブラリ．詳細はこちら[https://github.com/rwightman/pytorch-image-models]
 """
 
+from ast import literal_eval
+
 import FrEIA.framework as Ff
 import FrEIA.modules as Fm
 import timm
@@ -16,7 +18,7 @@ import constants as const
 
 
 def subnet_conv_func(kernel_size: int, hidden_ratio: float):
-    """指定されたカーネルサイズとカーネル数を持つ2層の畳み込み層を返す関数を返します．
+    """指定されたカーネルサイズとカーネル数を持つ2層の畳み込み層を返す関数を返す．
     Args:
         kernel_size: 畳み込み層のカーネルサイズ
         hidden_ratio: 入力チャンネル数に対しての隠れ層のチャンネル数
@@ -122,7 +124,7 @@ class FastFlow(nn.Module):
             for in_channels, scale in zip(channels, scales):
                 self.norms.append(
                     nn.LayerNorm(
-                        [in_channels, int(input_size / scale), int(input_size / scale)],
+                        [in_channels, int(input_size[0] / scale), int(input_size[1] / scale)],
                         elementwise_affine=True,
                     )
                 )
@@ -132,11 +134,22 @@ class FastFlow(nn.Module):
             param.requires_grad = False
 
         # Flow部分の定義．特徴マップが複数ある場合はその個数分Flowを定義．
+        # TODO: チャンネル数を修正
         self.nf_flows = nn.ModuleList()
+        '''
+        self.nf_flows.append(
+            nf_fast_flow(
+                [1792, 120, 160],
+                conv3x3_only=conv3x3_only,
+                hidden_ratio=hidden_ratio,
+                flow_steps=flow_steps,
+            )
+        )
+        '''
         for in_channels, scale in zip(channels, scales):
             self.nf_flows.append(
                 nf_fast_flow(
-                    [in_channels, int(input_size / scale), int(input_size / scale)],
+                    [in_channels, int(input_size[0] / scale), int(input_size[1] / scale)],
                     conv3x3_only=conv3x3_only,
                     hidden_ratio=hidden_ratio,
                     flow_steps=flow_steps,
@@ -188,7 +201,7 @@ class FastFlow(nn.Module):
                     feature = feature.permute(0, 2, 1)
 
                     # (B, D, N) -> (B, D, Np, Np). Np: 行/列方向のパッチの個数
-                    feature = feature.reshape(B, D, self.input_size // 16, self.input_size // 16)
+                    feature = feature.reshape(B, D, self.input_size[0] // 16, self.input_size[1] // 16)
                     features.append(feature)
                 features = [torch.stack(features, dim=0).transpose(0, 1)]
 
@@ -232,7 +245,7 @@ class FastFlow(nn.Module):
                 x = x.permute(0, 2, 1)
 
                 # (B, D, N) -> (B, D, Np, Np). Np: 行/列方向のパッチの個数
-                x = x.reshape(B, D, self.input_size // 16, self.input_size // 16)
+                x = x.reshape(B, D, self.input_size[0] // 16, self.input_size[1] // 16)
                 features = [x]
 
         # MobileViTの場合
@@ -260,7 +273,7 @@ class FastFlow(nn.Module):
             N, _, C = x.shape
             x = self.feature_extractor.norm(x)
             x = x.permute(0, 2, 1)
-            x = x.reshape(N, C, self.input_size // 16, self.input_size // 16)
+            x = x.reshape(N, C, self.input_size[0] // 16, self.input_size[1] // 16)
             features = [x]
 
         # 事前学習済みモデルがResNetの場合
@@ -284,12 +297,23 @@ class FastFlow(nn.Module):
 
             else:
                 # 特徴マップの抽出（M個のスケールの特徴マップを抽出）
-                # (B, C, H, W) -> (B, M, D, H', W'). M: 特徴マップの数.
+                # (B, C, H, W) -> (B, M, D, H', W'). M: 特徴マップの数, D: 各特徴マップのチャンネル数(WRN50_2の場合，256, 512, 1024)
                 features = self.feature_extractor(x)
 
                 # 各スケールの特徴マップについてLayerNorm
-                # -> (M, B, D, H', W')
+                # -> (M], B, D, H', W')
                 features = [self.norms[i](feature) for i, feature in enumerate(features)]
+                # concat
+                # -> (1], B, D, H', W')
+                '''
+                max_shape = features[0].shape[-2:]
+                features = [
+                    features[0],
+                    F.interpolate(features[1], size=max_shape, mode='bilinear'),
+                    F.interpolate(features[2], size=max_shape, mode='bilinear')
+                ]
+                features = [torch.cat(features, dim=1)]
+                '''
 
         loss = 0
         outputs = []
@@ -338,7 +362,7 @@ class FastFlow(nn.Module):
                         # -> (B, 1, P, P)
                         a_map = F.interpolate(
                             -prob,
-                            size=[self.input_size, self.input_size],
+                            size=[self.input_size[0], self.input_size[1]],
                             mode="bilinear",
                             align_corners=False,
                         )
@@ -350,7 +374,7 @@ class FastFlow(nn.Module):
                     prob = torch.exp(log_prob)
                     a_map = F.interpolate(
                         -prob,
-                        size=[self.input_size, self.input_size],
+                        size=[self.input_size[0], self.input_size[1]],
                         mode="bilinear",
                         align_corners=False,
                     )
@@ -358,8 +382,7 @@ class FastFlow(nn.Module):
 
             # 通常: -> (B, 1, P, P, M), パッチ分割時: -> (N], B, 1, P, P, M)
             if self.patch_size:
-                # -> (B, N, 1, P, P, M)
-                anomaly_map_list = [torch.stack(x, dim=0) for x in anomaly_map_list]
+                anomaly_map_list = [torch.stack(x, dim=0) for x in anomaly_map_list]  # -> (B, N, 1, P, P, M)
                 anomaly_map_list = torch.stack(anomaly_map_list, dim=-1).transpose(0, 1)
             else:
                 anomaly_map_list = torch.stack(anomaly_map_list, dim=-1)
@@ -380,11 +403,13 @@ def build_model(config: dict, args) -> torch.nn.Module:
     Returns:
         FastFlowのインスタンス
     """
+    # モデル固有の入力画像の形を取得 -> (H, W)
+    input_size = literal_eval(config['input_size'])
 
     model = FastFlow(
         backbone_name=config["backbone_name"],
         flow_steps=config["flow_step"],
-        input_size=config["input_size"],
+        input_size=input_size,
         conv3x3_only=config["conv3x3_only"],
         hidden_ratio=config["hidden_ratio"],
         patch_size=args.patchsize,

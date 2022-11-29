@@ -7,6 +7,7 @@ import argparse
 import constants as const
 from evaluate import evaluate
 from train import train
+from postprocessing import postprocessing
 
 
 def parse_args():
@@ -25,7 +26,7 @@ def parse_args():
         "--category",
         type=str,
         required=True,
-        help="category name in dataset. If 'all' was specified, train FastFlow by using all normal data",
+        help="category name in dataset. If 'all' was specified, train FastFlow by using all OK_Clip data",
     )
     parser.add_argument('--valid', type=str, help='validation category')
     parser.add_argument('--color', type=str, choices=['rgb', 'gray'])
@@ -33,14 +34,16 @@ def parse_args():
     parser.add_argument('--random', action='store_true', help='random patch sampling')
     parser.add_argument('--mask', action='store_true', help='target mask')
     parser.add_argument("--eval", action="store_true", help="run eval only")
+    parser.add_argument("--post", action='store_true', help='run postprocessing only')
     parser.add_argument(
         "-ckpt", "--checkpoint", type=str, help="path to load checkpoint"
     )
     parser.add_argument("--heatmap", action='store_true', help='saving heatmap on test images')
+    parser.add_argument('-t', '--threshold', type=float, help='threshold')
     args = parser.parse_args()
 
     # 引数のチェック
-    dataset_list = ['mvtec', 'jelly']
+    dataset_list = ['mvtec', 'jelly', 'package']
     assert args.name in dataset_list, f'利用可能なデータセットは{dataset_list}です．'
 
     if args.name == 'mvtec':
@@ -57,5 +60,7 @@ if __name__ == "__main__":
         args.valid = args.category
     if args.eval:
         evaluate(args)
+    elif args.post:
+        postprocessing(args)
     else:
         train(args)

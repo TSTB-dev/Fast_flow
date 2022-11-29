@@ -2,6 +2,7 @@ import yaml
 import pathlib
 import tqdm
 import time
+from ast import literal_eval
 
 import torch
 from ignite.contrib.metrics import ROC_AUC
@@ -16,10 +17,11 @@ import fastflow
 import utils
 
 
-def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, is_mask: bool, train_info: dict = None, save_img: bool = False) -> float:
+def eval_once(args, dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, is_mask: bool, train_info: dict = None, save_img: bool = False) -> float:
     """modelを評価する. 入力画像に対する異常のヒートマップはsave_dir内に保存．
 
     Args:
+        args: ArgParserが受けとった引数
         dataloader: テストセットのdataloaderインスタンス
         model: modelインスタンス
         is_mask: 異常箇所のマスクがあるかどうか
@@ -28,16 +30,13 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
     Returns:
         auroc: AUROC
     """
-    dataloader, train_dataloader = dataloader
 
     # モデルを評価モードに設定
     model.eval()
     auroc_metric = ROC_AUC()
     if train_info:
         save_dir = train_info['other']['save_dir']
-        image_size = train_info['data']['image_size']
-
-    # Anomaly_mapよりAUROCを計算
+        image_size = literal_eval(train_info['data']['image_size'])
     image_files = dataloader.dataset.image_files
 
     idx = 0
@@ -58,11 +57,17 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
         outputs = ret["anomaly_map"].cpu().detach()
 
         # heatmapを保存
+        save = True
         if train_info and save_img:
             if model.patch_size:
                 utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb', suffix='heatmap')
             else:
-                img_dir = utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap')
+                for path in batch_files:
+                    dir_name = path.parent.name  # 正常なら'OK_Clip', 異常なら'NG_Clip'
+                    if 'NG' in dir_name:
+                        save = True
+                if save:
+                    utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap')
 
         if is_mask:
             # pixelごとのスコアにより，AUROCを算出．
@@ -87,9 +92,10 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
                 # targets: (B, )
                 outputs = torch.mean(outputs, dim=[1, 2, 3])
 
-            targets_list.append(targets)
-            preds_list.append(outputs)
             auroc_metric.update((outputs, targets))
+
+        targets_list.append(targets)
+        preds_list.append(outputs)
 
         idx += 1
 
@@ -101,24 +107,36 @@ def eval_once(dataloader: torch.utils.data.DataLoader, model: torch.nn.Module, i
     print(f"Std inference time per image: {std:.2f}[ms]")
 
     # 予測性能を評価する．
-    # 全体の予測結果を集約する．predsは正常確率に負を掛けたもののリストであるため，異常確率(scores)に変換する．
+    # 全体の予測結果を集約する．predsは正常確率に負を掛けたもののリストであるため，異常度(scores)に変換する．
     preds = torch.concat(preds_list, dim=0).cpu().numpy()
     targets = torch.concat(targets_list, dim=0).cpu().numpy()
     scores = 1. + preds
 
     # TPR, FPR, しきい値の計算
-    fpr, tpr, thresholds = metrics.roc_curve(targets, scores)
-    best_thresh_idx = np.argmax(tpr - fpr)  # TPR - FPRが最大になるようなしきい値が最良
+    fpr_list, tpr_list, thresholds = metrics.roc_curve(targets, scores)
+    best_thresh_idx = np.argmax(tpr_list - fpr_list)  # TPR - FPRが最大になるようなしきい値が最良
     best_threshold = thresholds[best_thresh_idx]
-    preds_sparse = np.where(scores > best_threshold, 1, 0)  # そのしきい値を用いて異常正常を分類
+
+    fpr, tpr = fpr_list[best_thresh_idx], tpr_list[best_thresh_idx]
+    preds_sparse = np.where(scores > best_threshold, 1, 0)  # そのしきい値を用いて異常・正常を分類
+
+    # 異常・正常サンプルのスコアを横軸にとるヒストグラムを作成
+    normal_idx = np.where(targets == 0)
+    anomaly_idx = np.where(targets == 1)
+    normal_scores = scores[normal_idx]
+    anomaly_scores = scores[anomaly_idx]
 
     # 混同行列，AUCの計算
     cm = metrics.confusion_matrix(targets, preds_sparse)
 
     auroc = auroc_metric.compute()
-    print("AUROC: {}".format(auroc))
+    print(f"AUROC: {auroc:.3f}")
+    if train_info:
+        utils.save_evaluate_info(args, save_dir, auroc, best_threshold, fpr, tpr)
+        utils.save_histogram(save_dir, auroc, normal_scores, anomaly_scores)
 
     print(f"ConfusionMatrix: \n{cm}")
+    print(f"best_threshold: \n{best_threshold}")
     return auroc
 
 
@@ -147,9 +165,27 @@ def evaluate(args):
 
     # テストセットを作成
     test_dataloader = dataset.build_test_data_loader(args, config)
-    train_dataloader = dataset.build_train_data_loader(args, config)
 
     # モデルを評価
     model.cuda()
-    eval_once(test_dataloader, model, args.mask, train_info=train_info, save_img=args.heatmap)
+    # debug_on_train_data(train_dataloader, model, train_info)
+    eval_once(args, test_dataloader, model, is_mask=args.mask, train_info=train_info, save_img=args.heatmap)
+
+
+def debug_on_train_data(train_dataloder, model, train_info):
+    idx = 0
+    save_dir = './debug'
+    image_size = literal_eval(train_info['data']['image_size'])
+    image_files = train_dataloder.dataset.image_files
+    model.eval()
+
+    for data in tqdm.tqdm(train_dataloder):
+        batch_files = image_files[idx * const.BATCH_SIZE:(idx+1)*const.BATCH_SIZE]
+        data = data.cuda()
+        with torch.no_grad():
+            ret = model(data)
+        outputs = ret['anomaly_map'].cpu().detach()
+        utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap')
+
+        idx += 1
 

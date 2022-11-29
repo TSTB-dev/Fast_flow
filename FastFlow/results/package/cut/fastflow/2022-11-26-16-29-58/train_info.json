@@ -1,0 +1,27 @@
+{
+    "data": {
+        "dataset_path": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\data\\package",
+        "data_class": "cut",
+        "color_mode": null,
+        "image_size": "(240, 320)",
+        "patch_size": null
+    },
+    "hyperparameters": {
+        "n_epochs": 50,
+        "batch_size": 4,
+        "learning_rate": 0.001,
+        "weight_decay": 1e-05
+    },
+    "result": {
+        "start_time": "2022-11-26-13-37-57",
+        "end_time": "2022-11-26-14-04-23"
+    },
+    "other": {
+        "log_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\logs\\2022-11-26-16-29-58_cut_fastflow",
+        "save_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\results\\package\\cut\\fastflow\\2022-11-26-16-29-58",
+        "ckpt_dir": "C:\\Users\\had-int22\\PycharmProjects\\Pytorch_AD\\FastFlow\\results\\package\\cut\\fastflow\\2022-11-26-16-29-58\\ckpt",
+        "log_interval": 10,
+        "eval_interval": 10,
+        "ckpt_interval": 10
+    }
+}
