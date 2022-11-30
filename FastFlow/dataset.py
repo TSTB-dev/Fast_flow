@@ -237,9 +237,10 @@ class JellyDataset(torch.utils.data.Dataset):
             target = Image.open(
                 str(image_file).replace("NG_Clip", "NG_Clip_Label")
             )
-            target = np.asarray(target) / 255.
+            target = np.asarray(target, dtype=np.uint8) / 255
             target = torch.from_numpy(target).unsqueeze(dim=0)
             target = F.resize(target, self.input_size, interpolation=InterpolationMode.NEAREST)
+            target = torch.where(target > 0.5, 1, 0)
 
         return image, target
 
@@ -375,6 +376,7 @@ class PackDataset(torch.utils.data.Dataset):
             target = self.target_transform(target)
             target = (np.asarray(target, dtype=np.uint8) / 255)
             target = torch.from_numpy(target).unsqueeze(dim=0)
+            target = torch.where(target > 0.5, 1, 0)
 
         return image, target
 

@@ -85,7 +85,7 @@ def create_log_dir(model_name: str, class_name: str) -> (str, str):
     return log_dir, now
 
 
-def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size: int, patch_size: int = None, color_mode: str = 'rgb', suffix: str = 'heatmap'):
+def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size: int, patch_size: int = None, color_mode: str = 'rgb', suffix: str = 'heatmap', class_name: str = ''):
     """画像を指定された形式で保存する
 
     Args:
@@ -96,6 +96,7 @@ def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size
         patch_size: パッチサイズ(訓練時にパッチ分割されていた場合)
         color_mode: 'rgb'もしくは'gray'
         suffix: 接尾辞, 'heatmap'など
+        class_name: 評価に用いるクラス名
 
     Returns:
         heatmap_dir: ヒートマップを格納するディレクトリのパス
@@ -110,7 +111,7 @@ def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size
         images = images.permute([0, 2, 3, 1]).cpu().numpy()
 
     # 元画像のファイル名にsuffixをつけて新しいファイル名を作成
-    img_dir = os.path.join(save_dir, f'{suffix}')
+    img_dir = os.path.join(save_dir, f'{suffix}_{class_name}')
     pathlib.Path(img_dir).mkdir(parents=True, exist_ok=True)
 
     for idx, filename in enumerate(filenames):
@@ -132,7 +133,7 @@ def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size
             heatmap = images[idx]
 
         # heatmapと元画像の合成
-        alpha = 0.7
+        alpha = 0.6
         fig = plt.figure()
         plt.imshow(heatmap, cmap='jet', alpha=alpha)
         plt.imshow(img_org, alpha=1-alpha)
@@ -356,6 +357,6 @@ def convert_binary_image(dataset_dir: str):
 
 
 if __name__ == '__main__':
-    dataset_dir = "C:\\Users\had-int22\PycharmProjects\Pytorch_AD\data\package_square"
+    dataset_dir = "C:\\Users\had-int22\PycharmProjects\Pytorch_AD\data\jelly_mask"
     # convert_binary_image(dataset_dir)
-    # convert_bmp_to_jpg(dataset_dir)
+    convert_bmp_to_jpg(dataset_dir)

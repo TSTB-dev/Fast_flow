@@ -92,7 +92,7 @@ class FastFlow(nn.Module):
 
         # パッチに分割されている場合は入力画像のサイズをパッチサイズに変更
         if patch_size:
-            input_size = patch_size
+            input_size = (patch_size, patch_size)
         self.patch_size = patch_size
 
         # 事前学習済みモデルの読み込み[ViT]
