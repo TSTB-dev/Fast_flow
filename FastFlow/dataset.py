@@ -240,7 +240,7 @@ class JellyDataset(torch.utils.data.Dataset):
             target = np.asarray(target, dtype=np.uint8) / 255
             target = torch.from_numpy(target).unsqueeze(dim=0)
             target = F.resize(target, self.input_size, interpolation=InterpolationMode.NEAREST)
-            target = torch.where(target > 0.5, 1, 0)
+            target = torch.where(target > 0.5, 1., 0.)
 
         return image, target
 
@@ -304,7 +304,8 @@ class PackDataset(torch.utils.data.Dataset):
         anormal_list = list(anormal_dir.glob('*.jpg'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
-        random.shuffle(normal_list)
+        # random.shuffle(normal_list)
+        # TODO:　ここのシャッフルを直す
 
         if is_train:
             self.image_files = normal_list[int(len(normal_list) * test_ratio):]
@@ -376,7 +377,7 @@ class PackDataset(torch.utils.data.Dataset):
             target = self.target_transform(target)
             target = (np.asarray(target, dtype=np.uint8) / 255)
             target = torch.from_numpy(target).unsqueeze(dim=0)
-            target = torch.where(target > 0.5, 1, 0)
+            target = torch.where(target > 0.5, 1., 0.)
 
         return image, target
 
@@ -433,7 +434,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
-        shuffle=True,
+        shuffle=False,  # TODO: it is True
         num_workers=4,
         drop_last=True,
     )

@@ -8,8 +8,9 @@ import tqdm
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, auc, roc_curve
 import torch
+from torchvision import transforms
 import cv2
 from ignite.contrib.metrics import ROC_AUC
 
@@ -51,6 +52,25 @@ def mask_background(image_files: list, predictions: torch.Tensor) -> torch.Tenso
     return predictions, torch.stack(mask_list, dim=0)
 
 
+def mask_edge(predictions: torch.Tensor, l_x: float, r_x: float) -> torch.Tensor:
+    """ヒートマップから，端の部分にある異常を無視する．
+    Args:
+        heatmaps: heatmap
+        l_x: 有効な領域の左端のx座標
+        r_x: 有効な領域の右端のx座標
+
+    Returns:
+        masked_imgs: 左右端の異常を除去した予測マスク画像
+    """
+    outputs = torch.zeros_like(predictions)
+    for idx, pred_map in enumerate(predictions):
+        # mask_map: (1, H, W)
+        mask_map = torch.zeros_like(pred_map)
+        mask_map[..., l_x:r_x] = 1.
+        outputs[idx] = mask_map * pred_map
+    return outputs
+
+
 def create_prediction_map(threshold: float, heatmaps: torch.Tensor) -> torch.Tensor:
     """ヒートマップに対して後処理し，異常箇所を1, 正常箇所を0とするマスク画像を返す．
     Args:
@@ -59,9 +79,35 @@ def create_prediction_map(threshold: float, heatmaps: torch.Tensor) -> torch.Ten
     Returns:
         mask_image: 後処理したマスク画像
     """
+    outputs = torch.zeros_like(heatmaps)
     for idx, heatmap in enumerate(heatmaps):
-        heatmaps[idx] = torch.where(heatmap > threshold, 1, 0)
-    return heatmaps
+        outputs[idx] = torch.where(heatmap > threshold, 1, 0)
+    return outputs
+
+
+def area_thresholding(images: torch.Tensor, area_thresh: float) -> torch.Tensor:
+    """二値化された異常の候補領域(regions)のなかで，一定の面積以下のものを無視する．
+    Args:
+        images: 二値化された画像のバッチ, (B, 1, H, W)
+        area_thresh: 面積のしきい値
+    Returns:
+        outputs: area_thresh以下の面積のregionを除去した二値化画像．
+    """
+    outputs = torch.zeros_like(images)
+    for idx, image in enumerate(images):
+        img_arr = image.permute([1, 2, 0]).numpy().astype(np.uint8)
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(img_arr)
+        # 背景(画素値が0)は0とラベリングされているので，異常の候補領域(region)のみ抽出, この関数についてはこちら[https://axa.biopapyrus.jp/ia/opencv/object-detection.html]
+        region_stats = stats[1:]
+        region_areas = region_stats[:, -1]
+        valid_label_idx = np.where(region_areas > area_thresh)[0]
+        if valid_label_idx.size == 0:
+            pass
+        else:
+            for val_idx in valid_label_idx:
+                outputs[idx] += (labels == val_idx).astype(np.float32)
+
+    return outputs
 
 
 def predict(dataloader, model, threshold: float, save_dir: str):
@@ -75,10 +121,14 @@ def predict(dataloader, model, threshold: float, save_dir: str):
     Returns:
 
     """
+    # しきい値を定める．
+    # [ヒートマップの左右両端の無効化] l_x: 有効領域の左端のx座標, r_x: 同様に右端のx座標
+    # [小さすぎる異常面積の無効化] area_thresh: 異常面積のしきい値，二値化後に適用．
+    l_x, r_x = 50, 1070  # 単位はpixel
+    area_thresh = 100
 
     idx = 0
     model.eval()
-    auroc_metric = ROC_AUC()
     image_files = dataloader.dataset.image_files
     target_list = []
     pred_list = []
@@ -92,33 +142,51 @@ def predict(dataloader, model, threshold: float, save_dir: str):
 
         # anomaly_mapは正常確率に負をかけたものであるため，異常度に変換
         anomaly_map = ret['anomaly_map'].cpu().detach()
+        # 異常マップの端の部分は無視する．
         anomaly_map = 1. + anomaly_map
+        anomaly_map = mask_edge(anomaly_map, l_x, r_x)
 
-        # しきい値にもとづき，二値化する
-        pred_maps = create_prediction_map(threshold, anomaly_map)
+        # しきい値が指定されている場合，しきい値にもとづき，二値化する.
+        pred_maps = torch.ones_like(anomaly_map)
+        if threshold:
+            pred_maps = create_prediction_map(threshold, anomaly_map)
+            utils.save_images(save_dir, pred_maps, filenames=batch_files, image_size=anomaly_map.shape[-2:],
+                              suffix='pred')
+            # pred_maps = area_thresholding(pred_maps, area_thresh)
 
-        # 背景は正常とする
-        pred_maps, mask = mask_background(batch_files, pred_maps)
-
-        # 画像ごとの予測を算出(pred_maps内に一つでも0より大きい値(異常)があれば異常と判定)
+        # 画像ごとの予測を算出（各画像のスコアはその画像のAnomaly mapの最大値とする）
         img_size = targets.shape[-2:]
         global_max_pool = torch.nn.MaxPool2d(kernel_size=img_size, stride=img_size)
         targets = global_max_pool(targets)[:, 0, 0, 0]
-        preds = global_max_pool(pred_maps)[:, 0, 0, 0]
+        preds = global_max_pool(anomaly_map * pred_maps)[:, 0, 0, 0]
         target_list.append(targets)
         pred_list.append(preds)
 
-        utils.save_images(save_dir, pred_maps, filenames=batch_files, image_size=pred_maps.shape[-2:], suffix='pred')
-        utils.save_images(save_dir, mask, filenames=batch_files, image_size=pred_maps.shape[-2:], suffix='mask')
+        # utils.save_images(save_dir, anomaly_map, filenames=batch_files, image_size=anomaly_map.shape[-2:], suffix='pred')
 
         idx += 1
 
+    # TODO: p -> scoresに修正
     t = torch.stack(target_list, dim=0).flatten()
     p = torch.stack(pred_list, dim=0).flatten()
-    precision, recall, f_score, support = precision_recall_fscore_support(t, p)
-    cm = confusion_matrix(t, p)
+
+    normal_idx = torch.where(t == 0.)
+    anomaly_idx = torch.where(t == 1.)
+    normal_scores = p[normal_idx]
+    anomaly_scores = p[anomaly_idx]
+
+    fpr, tpr, thresholds = roc_curve(t, p)
+    best_thresholds = thresholds[np.argmax(tpr-fpr)]
+    auroc = auc(fpr, tpr)
+    utils.save_histogram(save_dir, auroc, normal_scores, anomaly_scores)
+
+    preds_label = torch.where(p > best_thresholds, 1., 0.)
+    precision, recall, f_score, support = precision_recall_fscore_support(t, preds_label)
+    cm = confusion_matrix(t, preds_label)
 
     print(f"Precision: {precision}\nRecall: {recall}\nF-score: {f_score}\nConfusion Matrix: {cm}")
+    print(f"Image-level AUROC: {auroc}\n Best thresholds: {best_thresholds}")
+
 
 
 def postprocessing(args):

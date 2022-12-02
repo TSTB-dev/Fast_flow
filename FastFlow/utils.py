@@ -133,9 +133,15 @@ def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size
             heatmap = images[idx]
 
         # heatmapと元画像の合成
-        alpha = 0.6
+        if suffix == 'pred':
+            alpha = 1.0
+            cmap = 'gray'
+        else:
+            alpha = 0.6
+            cmap = 'jet'
+
         fig = plt.figure()
-        plt.imshow(heatmap, cmap='jet', alpha=alpha)
+        plt.imshow(heatmap, cmap=cmap, alpha=alpha)
         plt.imshow(img_org, alpha=1-alpha)
         plt.savefig(save_path)
         plt.close(fig)

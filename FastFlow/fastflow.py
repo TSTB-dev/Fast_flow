@@ -134,18 +134,16 @@ class FastFlow(nn.Module):
             param.requires_grad = False
 
         # Flow部分の定義．特徴マップが複数ある場合はその個数分Flowを定義．
-        # TODO: チャンネル数を修正
+        # TODO: チャンネル数を修正, preconcat
         self.nf_flows = nn.ModuleList()
-        '''
-        self.nf_flows.append(
-            nf_fast_flow(
-                [1792, 120, 160],
-                conv3x3_only=conv3x3_only,
-                hidden_ratio=hidden_ratio,
-                flow_steps=flow_steps,
-            )
-        )
-        '''
+        # self.nf_flows.append(
+        #     nf_fast_flow(
+        #         [64, 128, 256],
+        #         conv3x3_only=conv3x3_only,
+        #         hidden_ratio=hidden_ratio,
+        #         flow_steps=flow_steps,
+        #     )
+        # )
         for in_channels, scale in zip(channels, scales):
             self.nf_flows.append(
                 nf_fast_flow(
@@ -305,15 +303,14 @@ class FastFlow(nn.Module):
                 features = [self.norms[i](feature) for i, feature in enumerate(features)]
                 # concat
                 # -> (1], B, D, H', W')
-                '''
-                max_shape = features[0].shape[-2:]
-                features = [
-                    features[0],
-                    F.interpolate(features[1], size=max_shape, mode='bilinear'),
-                    F.interpolate(features[2], size=max_shape, mode='bilinear')
-                ]
-                features = [torch.cat(features, dim=1)]
-                '''
+                # TODO: preconcat
+                # max_shape = features[0].shape[-2:]
+                # features = [
+                #     features[0],
+                #     F.interpolate(features[1], size=max_shape, mode='bilinear'),
+                #     F.interpolate(features[2], size=max_shape, mode='bilinear')
+                # ]
+                # features = [torch.cat(features, dim=1)]
 
         loss = 0
         outputs = []
