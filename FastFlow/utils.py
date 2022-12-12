@@ -224,7 +224,7 @@ def save_evaluate_info(args, save_dir: str, auc: float, threshold: float, fpr: f
         'True Positive Rate': float(tpr),
     }
 
-    info_path = pathlib.Path(os.path.join(save_dir, 'eval_info.json'))
+    info_path = pathlib.Path(os.path.join(save_dir, 'eval_info_399.json'))
     info_path.touch()
     with open(info_path, mode='w') as f:
         json.dump(info_dict, f, indent=4)

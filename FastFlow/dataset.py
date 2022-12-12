@@ -25,7 +25,7 @@ class MVTecDataset(torch.utils.data.Dataset):
     MVTecDatasetをロードするためのクラス．
     """
 
-    def __init__(self, root: str, category: str, input_size: int, is_train: bool = True, is_mask: bool = False):
+    def __init__(self, root: str, category: str, input_size: int, is_train: bool = True, is_mask: bool = False, color: str = 'rgb'):
         """
         Args:
             root: MVTecADのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
@@ -33,16 +33,18 @@ class MVTecDataset(torch.utils.data.Dataset):
             input_size: 事前学習済みモデルの入力画像の形．256と指定された場合は(256, 256)の画像を表す．
             is_train: 訓練データかどうか
             is_mask: 異常箇所のマスクがあるかどうか．
+            color: rgbもしくはgray
         """
 
         # 事前学習済みモデルに入力するための画像変換を定義
-        # ImageNetによる事前学習を想定しているため，ImageNet用の正規化をする．詳細は[https://teratail.com/questions/295871]を参照
-        self.image_transform = transforms.Compose(
-            [
+        # ImageNetによる事前学習を想定しているため，RGBの3チャンネルを持つときは，ImageNet用の正規化をする．詳細は[https://teratail.com/questions/295871]を参照
+        transforms_list = [
                 transforms.Resize(input_size),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ]
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]
+        self.image_transform = transforms.Compose(
+            transforms_list
         )
 
         # 訓練データのパスのリスト取得
@@ -69,6 +71,7 @@ class MVTecDataset(torch.utils.data.Dataset):
                     else:
                         self.label.append(1)
 
+        self.color = color
         self.is_train = is_train
         self.is_mask = is_mask
 
@@ -88,6 +91,9 @@ class MVTecDataset(torch.utils.data.Dataset):
         # 変換後のimageの形は，(C, input_size, input_size). PytorchはChannel-firstフォーマットをとる．(TensorFlowはChannel-lastフォーマット)
         image_file = self.image_files[index]
         image = Image.open(image_file)
+
+        if self.color == 'gray':
+            image = image.convert('RGB')
         image = self.image_transform(image)
 
         if self.is_train:
@@ -304,7 +310,7 @@ class PackDataset(torch.utils.data.Dataset):
         anormal_list = list(anormal_dir.glob('*.jpg'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
-        # random.shuffle(normal_list)
+        random.shuffle(normal_list)
         # TODO:　ここのシャッフルを直す
 
         if is_train:
@@ -408,6 +414,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             category=args.category,
             input_size=input_size,
             is_train=True,
+            color=args.color
         )
     elif args.name == 'jelly':
         train_dataset = JellyDataset(
@@ -434,7 +441,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
-        shuffle=False,  # TODO: it is True
+        shuffle=True,  # TODO: it is True
         num_workers=4,
         drop_last=True,
     )
@@ -459,6 +466,7 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             input_size=input_size,
             is_train=False,
             is_mask=args.mask,
+            color=args.color
         )
     elif args.name == 'jelly':
         test_dataset = JellyDataset(

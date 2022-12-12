@@ -144,7 +144,7 @@ def predict(dataloader, model, threshold: float, save_dir: str):
         anomaly_map = ret['anomaly_map'].cpu().detach()
         # 異常マップの端の部分は無視する．
         anomaly_map = 1. + anomaly_map
-        anomaly_map = mask_edge(anomaly_map, l_x, r_x)
+        # anomaly_map = mask_edge(anomaly_map, l_x, r_x)
 
         # しきい値が指定されている場合，しきい値にもとづき，二値化する.
         pred_maps = torch.ones_like(anomaly_map)

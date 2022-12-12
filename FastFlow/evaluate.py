@@ -57,16 +57,10 @@ def eval_once(args, dataloader: torch.utils.data.DataLoader, model: torch.nn.Mod
         outputs = ret["anomaly_map"].cpu().detach()
 
         # heatmapを保存
-        save = True
         if train_info and save_img:
             if model.patch_size:
                 utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
             else:
-                for path in batch_files:
-                    dir_name = path.parent.name  # 正常なら'OK_Clip', 異常なら'NG_Clip'
-                    if 'NG' in dir_name:
-                        save = True
-                if save:
                     utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
 
         if is_mask:
