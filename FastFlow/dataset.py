@@ -279,6 +279,7 @@ class PackDataset(torch.utils.data.Dataset):
         """
         self.input_size = input_size
         self.patch_size = patch_size
+        self.batch_files = None
 
         # 事前学習済みモデルに入力するための画像変換を定義
         # ImageNetによる事前学習を想定しているため，ImageNet用の正規化をする．詳細は[https://teratail.com/questions/295871]を参照
@@ -295,6 +296,7 @@ class PackDataset(torch.utils.data.Dataset):
         random.seed(seed)
         if category == 'all':
            data_dir = pathlib.Path(root)
+           normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
            normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
         else:
             normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
@@ -346,6 +348,7 @@ class PackDataset(torch.utils.data.Dataset):
         # 指定されたindexの画像を読み込み，事前学習済みモデルに対応する形式に変換
         # -> (C, input_size, input_size)
         image_file = self.image_files[index]
+        self.batch_files = image_file
         image = Image.open(image_file)
         image = self.image_transform(image)
 
@@ -433,7 +436,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
-        shuffle=True,
+        shuffle=False, # TODO: turn True
         num_workers=4,
         drop_last=True,
     )

@@ -4,17 +4,33 @@ FastFlowのモデル定義スクリプト.
 NormalizingFlowの実装にFrEIAというフレームワークを用いている．詳細はこちら[https://vislearn.github.io/FrEIA/_build/html/index.html]
 timmは事前学習済みモデルを利用するためのライブラリ．詳細はこちら[https://github.com/rwightman/pytorch-image-models]
 """
+DIMS_OUT = 128
+COND_DIMS = (32, )
 
 from ast import literal_eval
 
 import FrEIA.framework as Ff
 import FrEIA.modules as Fm
 import timm
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import constants as const
+
+
+class ConditioningNetwork(nn.Module):
+    def __init__(self, dims_in: int, neurons: int, dims_out: int):
+        super(ConditioningNetwork, self).__init__()
+        self.ffn = torch.nn.Sequential(
+            torch.nn.Linear(dims_in, neurons),
+            torch.nn.ReLU(),
+            torch.nn.Linear(neurons, dims_out)
+        )
+
+    def forward(self, c: torch.Tensor):
+        return self.ffn(c)
 
 
 def subnet_conv_func(kernel_size: int, hidden_ratio: float):
@@ -37,7 +53,7 @@ def subnet_conv_func(kernel_size: int, hidden_ratio: float):
     return subnet_conv
 
 
-def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_steps: int, clamp: float = 2.0):
+def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_steps: int, clamp: float = 2.0, feature_size=[]):
     """2D-Normalizing Flowを適用する．
     Args:
         input_chw: 入力される特徴マップの形: (C, H, W). C: Channel, H: Height, W: Width
@@ -45,6 +61,7 @@ def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_
         hidden_ratio: 特徴マップのチャンネル数の拡張率.
         flow_steps: Flowの数．
         clamp: スケーリングパラメータsの値域を指数関数に適用する前に，[-clamp, clamp]に制限
+        feature_size: 入力特徴マップのサイズ
 
     Returns:
         nodes: Normalizing Flow全体のモデル．通常のtorch.nn.Moduleのように扱える．
@@ -57,6 +74,9 @@ def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_
             kernel_size = 3
         nodes.append(
             Fm.AllInOneBlock,
+            # TODO: conditional input
+            cond=0,
+            cond_shape=tuple(feature_size),
             subnet_constructor=subnet_conv_func(kernel_size, hidden_ratio),
             affine_clamping=clamp,
             permute_soft=False,
@@ -101,6 +121,7 @@ class FastFlow(nn.Module):
             channels = [self.feature_extractor.num_features]  # [self.feature_extractor.feature_info[-1]['num_chs']]
             scales = [16]
 
+
         # 事前学習済みモデルの読み込み[ResNet], timm.create_modelの詳細は[https://rwightman.github.io/pytorch-image-models/feature_extraction/]
         else:
             # ResNetの場合，複数スケールの特徴マップをlistで取得, FastFlow原論文の表7参照[https://arxiv.org/abs/2111.07677]
@@ -114,11 +135,20 @@ class FastFlow(nn.Module):
             # channels: 各特徴マップのチャンネル数, scales: 各特徴マップの入力画像のスケール縮小率
             channels = self.feature_extractor.feature_info.channels()
             scales = self.feature_extractor.feature_info.reduction()
+            self.feature_size = np.split(np.array([size // scale for scale in scales for size in input_size]), 3)
 
             # LayerNormを定義
             # TransFormerについては後ろの方でLayerNormを適用．
             # ResNetに関しては複数の特徴マップがあるので，それぞれ個別に学習可能なLayerNormを適用．
             self.norms = nn.ModuleList()
+            self.cond_norms = nn.ModuleList()
+            for scale in scales:
+                self.cond_norms.append(
+                    nn.LayerNorm(
+                        [DIMS_OUT, int(input_size[0] / scale), int(input_size[1] / scale)],
+                        elementwise_affine=True,
+                    )
+                )
 
             # 各特徴マップについてLayerNormを定義
             for in_channels, scale in zip(channels, scales):
@@ -146,6 +176,7 @@ class FastFlow(nn.Module):
             )
         )
         '''
+        self.cfnn = ConditioningNetwork(dims_in=1792, neurons=512, dims_out=DIMS_OUT)
         for in_channels, scale in zip(channels, scales):
             self.nf_flows.append(
                 nf_fast_flow(
@@ -153,9 +184,11 @@ class FastFlow(nn.Module):
                     conv3x3_only=conv3x3_only,
                     hidden_ratio=hidden_ratio,
                     flow_steps=flow_steps,
+                    feature_size=[DIMS_OUT, input_size[0]//scale, input_size[1]//scale],
                 )
             )
         self.input_size = input_size
+
 
     def forward(self, x):
         # 事前学習済みモデルを評価モードにする．BatchNormなど訓練時と評価時で挙動の変わる層があるため．
@@ -299,6 +332,9 @@ class FastFlow(nn.Module):
                 # 特徴マップの抽出（M個のスケールの特徴マップを抽出）
                 # (B, C, H, W) -> (B, M, D, H', W'). M: 特徴マップの数, D: 各特徴マップのチャンネル数(WRN50_2の場合，256, 512, 1024)
                 features = self.feature_extractor(x)
+                conditions = [torch.nn.AvgPool2d(kernel_size=feature.shape[-2:])(feature) for feature in features]
+                conditions = torch.concat(conditions, dim=1)[..., 0, 0]
+                conditions = self.cfnn(conditions)
 
                 # 各スケールの特徴マップについてLayerNorm
                 # -> (M], B, D, H', W')
@@ -340,7 +376,16 @@ class FastFlow(nn.Module):
                 # 潜在変数z_0と対数ヤコビ行列式を取得
                 # output: (B, in_channels, H', W'), in_channels:入力チャンネル数, H', W':特徴マップの幅と高さ
                 # log_jac_dets: (B, )
-                output, log_jac_dets = self.nf_flows[i](feature)
+
+                # (B, COND_DIM)
+                c = torch.unsqueeze(torch.unsqueeze(conditions, dim=1), dim=1)
+                c = torch.repeat_interleave(torch.repeat_interleave(c, self.feature_size[i][0], dim=1), self.feature_size[i][1], dim=2)
+                c = torch.permute(c, [0, 3, 1, 2])
+
+                c = self.cond_norms[i](c)
+
+                # TODO: conditional inputs
+                output, log_jac_dets = self.nf_flows[i](feature, c=[c])
                 loss += torch.mean(
                     0.5 * torch.sum(output**2, dim=(1, 2, 3)) - log_jac_dets
                 )
