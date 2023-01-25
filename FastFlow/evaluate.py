@@ -9,7 +9,6 @@ from ignite.contrib.metrics import ROC_AUC
 from torch.utils.tensorboard import SummaryWriter
 from sklearn import metrics
 import numpy as np
-import matplotlib.pyplot as plt
 
 import constants as const
 import dataset
@@ -34,6 +33,9 @@ def eval_once(args, dataloader: torch.utils.data.DataLoader, model: torch.nn.Mod
     # モデルを評価モードに設定
     model.eval()
     auroc_metric = ROC_AUC()
+    save_dir = ''
+    image_size = None
+
     if train_info:
         save_dir = train_info['other']['save_dir']
         image_size = literal_eval(train_info['data']['image_size'])
@@ -53,50 +55,16 @@ def eval_once(args, dataloader: torch.utils.data.DataLoader, model: torch.nn.Mod
             end_time = time.perf_counter()
             elapsed_time_list.append((end_time - start_time)/const.BATCH_SIZE)
 
-        # outputsは各pixelについて予測した正常である確率に負を掛けたもの
-        outputs = ret["anomaly_map"].cpu().detach()
-
-        # heatmapを保存
-        save = True
-        if train_info and save_img:
-            if model.patch_size:
-                utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
-            else:
-                for path in batch_files:
-                    dir_name = path.parent.name  # 正常なら'OK_Clip', 異常なら'NG_Clip'
-                    if 'NG' in dir_name:
-                        save = True
-                if save:
-                    utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
-
-        if is_mask:
-            # pixelごとのスコアにより，AUROCを算出．
-            # outputs: (B, 1, H, W) -> (B * 1 * H * W, )
-            # targets: (B, 1, H, W) -> (B * 1 * H * W, )
-            outputs = outputs.flatten()
-            targets = targets.flatten()
+        if args.method == 'differnet':
+            outputs = ret['probs']
             auroc_metric.update((outputs, targets))
-        else:
-            # imageごとのスコアにより，AUROCを算出
-            # Anomaly_mapを空間方向にわたって平均
-
-            if model.patch_size:
-                # outputs: (B, N, 1, P, P) -> (B, )
-                # targets: (B, )
-                # パッチごとに異常スコアの平均をとり，それが最大のパッチの異常スコアを最終的なその画像のスコアとして扱う．
-                # max_patch_mean = torch.max(torch.mean(outputs, dim=[2, 3, 4]), dim=1)
-                # outputs = max_patch_mean.values
-                outputs = torch.mean(outputs, dim=[1, 2, 3, 4])
-            else:
-                # outputs: (B, 1, H, W) -> (B, )
-                # targets: (B, )
-                outputs = torch.mean(outputs, dim=[1, 2, 3])
-
-            auroc_metric.update((outputs, targets))
+        elif args.method == 'fastflow':
+            # outputsは各pixelについて予測した正常である確率に負を掛けたもの
+            outputs = ret["anomaly_map"].cpu().detach()
+            auroc_metric, outputs = postprocces(args, train_info, save_img, save_dir, outputs, batch_files, image_size, model, is_mask, targets, auroc_metric)
 
         targets_list.append(targets)
         preds_list.append(outputs)
-
         idx += 1
 
     # 推論速度を評価する
@@ -170,6 +138,50 @@ def evaluate(args):
     model.cuda()
     # debug_on_train_data(train_dataloader, model, train_info)
     eval_once(args, test_dataloader, model, is_mask=args.mask, train_info=train_info, save_img=args.heatmap)
+
+
+def postprocces(args, train_info, save_img, save_dir, outputs, batch_files, image_size, model, is_mask, targets,
+                auroc_metric):
+    # heatmapを保存
+    save = True
+    if train_info and save_img:
+        if model.patch_size:
+            utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb',
+                              suffix='heatmap', class_name=args.valid)
+        else:
+            for path in batch_files:
+                dir_name = path.parent.name  # 正常なら'OK_Clip', 異常なら'NG_Clip'
+                if 'NG' in dir_name:
+                    save = True
+            if save:
+                utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap',
+                                  class_name=args.valid)
+
+    if is_mask:
+        # pixelごとのスコアにより，AUROCを算出．
+        # outputs: (B, 1, H, W) -> (B * 1 * H * W, )
+        # targets: (B, 1, H, W) -> (B * 1 * H * W, )
+        outputs = outputs.flatten()
+        targets = targets.flatten()
+        auroc_metric.update((outputs, targets))
+    else:
+        # imageごとのスコアにより，AUROCを算出
+        # Anomaly_mapを空間方向にわたって平均
+
+        if model.patch_size:
+            # outputs: (B, N, 1, P, P) -> (B, )
+            # targets: (B, )
+            # パッチごとに異常スコアの平均をとり，それが最大のパッチの異常スコアを最終的なその画像のスコアとして扱う．
+            # max_patch_mean = torch.max(torch.mean(outputs, dim=[2, 3, 4]), dim=1)
+            # outputs = max_patch_mean.values
+            outputs = torch.mean(outputs, dim=[1, 2, 3, 4])
+        else:
+            # outputs: (B, 1, H, W) -> (B, )
+            # targets: (B, )
+            outputs = torch.mean(outputs, dim=[1, 2, 3])
+        auroc_metric.update((outputs, targets))
+
+    return auroc_metric, outputs
 
 
 def debug_on_train_data(train_dataloder, model, train_info):

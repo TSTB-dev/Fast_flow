@@ -10,6 +10,7 @@ import constants as const
 import dataset
 from evaluate import eval_once
 import fastflow
+import differnet
 import utils
 
 
@@ -72,19 +73,24 @@ def train(args):
     """
 
     # logを格納するディレクトリの作成とSummaryWriterの定義
-    log_dir, start_time = utils.create_log_dir("fastflow", args.category)
+    log_dir, start_time = utils.create_log_dir(args.method, args.category)
     print(f"TensorBoard上で学習状況を確認するには，次のコマンドを実行してください．\n tensorboard --logdir={log_dir} --port 0")
     writer = SummaryWriter(log_dir)
 
     # checkpointを格納するディレクトリの作成
-    save_dir = utils.create_save_dir('fastflow', args.category, args.data)
+    save_dir = utils.create_save_dir(args.method, args.category, args.data)
     ckpt_dir = os.path.join(save_dir, 'ckpt')
     pathlib.Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
 
     # backboneのメタ情報を読み込み，モデルをビルド
     with open(args.config, 'r') as yaml_file:
         config = yaml.safe_load(yaml_file)
-    model = fastflow.build_model(config, args)
+
+    if args.method == 'fastflow':
+        model = fastflow.build_model(config, args)
+    elif args.method == 'differnet':
+        model = differnet.build_model(config, args)
+
     optimizer = fastflow.build_optimizer(model)
 
     # dataloaderを作成し，モデルをGPUに転送

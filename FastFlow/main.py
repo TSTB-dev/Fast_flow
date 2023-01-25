@@ -17,6 +17,9 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Train FastFlow_org on MVTec-AD dataset")
     parser.add_argument(
+        "-m", "--method", type=str, required=True, help="A name of the method"
+    )
+    parser.add_argument(
         "-cfg", "--config", type=str, required=True, help="path to config file"
     )
     parser.add_argument('--name', type=str, required=True, help='dataset name')
@@ -32,6 +35,7 @@ def parse_args():
     parser.add_argument('--color', type=str, choices=['rgb', 'gray'])
     parser.add_argument('-p', '--patchsize', type=int, help='patch size. By default, patch separation will not do')
     parser.add_argument('--random', action='store_true', help='random patch sampling')
+    parser.add_argument('--shuffle', action='store_true', help='shuffle batch')
     parser.add_argument('--mask', action='store_true', help='target mask')
     parser.add_argument("--eval", action="store_true", help="run eval only")
     parser.add_argument("--post", action='store_true', help='run postprocessing only')

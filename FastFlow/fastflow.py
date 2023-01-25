@@ -74,9 +74,6 @@ def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_
             kernel_size = 3
         nodes.append(
             Fm.AllInOneBlock,
-            # TODO: conditional input
-            cond=0,
-            cond_shape=tuple(feature_size),
             subnet_constructor=subnet_conv_func(kernel_size, hidden_ratio),
             affine_clamping=clamp,
             permute_soft=False,
@@ -141,14 +138,6 @@ class FastFlow(nn.Module):
             # TransFormerについては後ろの方でLayerNormを適用．
             # ResNetに関しては複数の特徴マップがあるので，それぞれ個別に学習可能なLayerNormを適用．
             self.norms = nn.ModuleList()
-            self.cond_norms = nn.ModuleList()
-            for scale in scales:
-                self.cond_norms.append(
-                    nn.LayerNorm(
-                        [DIMS_OUT, int(input_size[0] / scale), int(input_size[1] / scale)],
-                        elementwise_affine=True,
-                    )
-                )
 
             # 各特徴マップについてLayerNormを定義
             for in_channels, scale in zip(channels, scales):
@@ -176,7 +165,6 @@ class FastFlow(nn.Module):
             )
         )
         '''
-        self.cfnn = ConditioningNetwork(dims_in=1792, neurons=512, dims_out=DIMS_OUT)
         for in_channels, scale in zip(channels, scales):
             self.nf_flows.append(
                 nf_fast_flow(
@@ -332,9 +320,9 @@ class FastFlow(nn.Module):
                 # 特徴マップの抽出（M個のスケールの特徴マップを抽出）
                 # (B, C, H, W) -> (B, M, D, H', W'). M: 特徴マップの数, D: 各特徴マップのチャンネル数(WRN50_2の場合，256, 512, 1024)
                 features = self.feature_extractor(x)
-                conditions = [torch.nn.AvgPool2d(kernel_size=feature.shape[-2:])(feature) for feature in features]
-                conditions = torch.concat(conditions, dim=1)[..., 0, 0]
-                conditions = self.cfnn(conditions)
+                # conditions = [torch.nn.AvgPool2d(kernel_size=feature.shape[-2:])(feature) for feature in features]
+                # conditions = torch.concat(conditions, dim=1)[..., 0, 0]
+                # conditions = self.cfnn(conditions)
 
                 # 各スケールの特徴マップについてLayerNorm
                 # -> (M], B, D, H', W')
@@ -378,14 +366,14 @@ class FastFlow(nn.Module):
                 # log_jac_dets: (B, )
 
                 # (B, COND_DIM)
-                c = torch.unsqueeze(torch.unsqueeze(conditions, dim=1), dim=1)
-                c = torch.repeat_interleave(torch.repeat_interleave(c, self.feature_size[i][0], dim=1), self.feature_size[i][1], dim=2)
-                c = torch.permute(c, [0, 3, 1, 2])
-
-                c = self.cond_norms[i](c)
+                # c = torch.unsqueeze(torch.unsqueeze(conditions, dim=1), dim=1)
+                # c = torch.repeat_interleave(torch.repeat_interleave(c, self.feature_size[i][0], dim=1), self.feature_size[i][1], dim=2)
+                # c = torch.permute(c, [0, 3, 1, 2])
+                #
+                # c = self.cond_norms[i](c)
 
                 # TODO: conditional inputs
-                output, log_jac_dets = self.nf_flows[i](feature, c=[c])
+                output, log_jac_dets = self.nf_flows[i](feature)
                 loss += torch.mean(
                     0.5 * torch.sum(output**2, dim=(1, 2, 3)) - log_jac_dets
                 )

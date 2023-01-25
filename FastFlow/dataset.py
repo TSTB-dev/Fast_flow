@@ -8,6 +8,7 @@ from glob import glob
 from ast import literal_eval
 import pathlib
 import random
+from typing import Union
 
 import numpy as np
 from numpy.random import default_rng
@@ -25,7 +26,7 @@ class MVTecDataset(torch.utils.data.Dataset):
     MVTecDatasetをロードするためのクラス．
     """
 
-    def __init__(self, root: str, category: str, input_size: int, is_train: bool = True, is_mask: bool = False):
+    def __init__(self, root: str, category: str, input_size: Union[int, tuple], is_train: bool = True, is_mask: bool = False):
         """
         Args:
             root: MVTecADのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
@@ -124,7 +125,7 @@ class JellyDataset(torch.utils.data.Dataset):
     JellyDatasetをロードするためのクラス
     """
 
-    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1,
+    def __init__(self, root: str, category: str, valid_category: str, input_size: Union[int, tuple], is_train: bool = True, test_ratio: float = 0.1,
                  is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
         """
         Args:
@@ -257,7 +258,7 @@ class PackDataset(torch.utils.data.Dataset):
     PackageDatasetをロードするためのクラス
     """
 
-    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1,
+    def __init__(self, root: str, category: str, valid_category: str, input_size: Union[int, tuple], is_train: bool = True, test_ratio: float = 0.1,
                  is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
         """
         Args:
@@ -296,7 +297,6 @@ class PackDataset(torch.utils.data.Dataset):
         random.seed(seed)
         if category == 'all':
            data_dir = pathlib.Path(root)
-           normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
            normal_list = list(data_dir.glob('*/OK_Clip/*.jpg'))
         else:
             normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
@@ -348,7 +348,6 @@ class PackDataset(torch.utils.data.Dataset):
         # 指定されたindexの画像を読み込み，事前学習済みモデルに対応する形式に変換
         # -> (C, input_size, input_size)
         image_file = self.image_files[index]
-        self.batch_files = image_file
         image = Image.open(image_file)
         image = self.image_transform(image)
 
@@ -436,7 +435,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
-        shuffle=False, # TODO: turn True
+        shuffle=args.shuffle,
         num_workers=4,
         drop_last=True,
     )
