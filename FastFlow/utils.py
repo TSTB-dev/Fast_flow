@@ -133,9 +133,15 @@ def save_images(save_dir: str, images: torch.Tensor, filenames: list, image_size
             heatmap = images[idx]
 
         # heatmapと元画像の合成
-        alpha = 0.6
+        if suffix == 'pred':
+            alpha = 1.0
+            cmap = 'gray'
+        else:
+            alpha = 0.6
+            cmap = 'jet'
+
         fig = plt.figure()
-        plt.imshow(heatmap, cmap='jet', alpha=alpha)
+        plt.imshow(heatmap, cmap=cmap, alpha=alpha)
         plt.imshow(img_org, alpha=1-alpha)
         plt.savefig(save_path)
         plt.close(fig)
@@ -218,7 +224,7 @@ def save_evaluate_info(args, save_dir: str, auc: float, threshold: float, fpr: f
         'True Positive Rate': float(tpr),
     }
 
-    info_path = pathlib.Path(os.path.join(save_dir, 'eval_info.json'))
+    info_path = pathlib.Path(os.path.join(save_dir, 'eval_info_399.json'))
     info_path.touch()
     with open(info_path, mode='w') as f:
         json.dump(info_dict, f, indent=4)

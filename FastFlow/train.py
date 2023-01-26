@@ -70,6 +70,7 @@ def train(args):
     Args:
         args: ArgumentParserで受け取った引数
     """
+    init_epoch = 0
 
     # logを格納するディレクトリの作成とSummaryWriterの定義
     log_dir, start_time = utils.create_log_dir("fastflow", args.category)
@@ -87,13 +88,21 @@ def train(args):
     model = fastflow.build_model(config, args)
     optimizer = fastflow.build_optimizer(model)
 
+    # ckptを指定した場合は読み込む．
+    model.cuda()
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        init_epoch = int(pathlib.Path(args.checkpoint).stem)
+
     # dataloaderを作成し，モデルをGPUに転送
     train_dataloader = dataset.build_train_data_loader(args, config)
     test_dataloader = dataset.build_test_data_loader(args, config)
-    model.cuda()
 
 
-    for epoch in range(const.NUM_EPOCHS):
+    for epoch in range(init_epoch, init_epoch + const.NUM_EPOCHS):
 
         # パラメータを更新
         loss = train_one_epoch(train_dataloader, model, optimizer, epoch)
