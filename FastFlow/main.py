@@ -3,7 +3,7 @@
 """
 
 import argparse
-
+import yaml
 import constants as const
 from evaluate import evaluate
 from train import train
@@ -17,15 +17,14 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description="Train FastFlow_org on MVTec-AD dataset")
     parser.add_argument(
-        "-cfg", "--config", type=str, required=True, help="path to config file"
+        "-cfg", "--config", type=str, help="path to config file"
     )
-    parser.add_argument('--name', type=str, required=True, help='dataset name')
-    parser.add_argument("--data", type=str, required=True, help="path to dataset folder")
+    parser.add_argument('--name', type=str, help='dataset name')
+    parser.add_argument("--data", type=str, help="path to dataset folder")
     parser.add_argument(
         "-cat",
         "--category",
         type=str,
-        required=True,
         help="category name in dataset. If 'all' was specified, train FastFlow by using all OK_Clip data",
     )
     parser.add_argument('--valid', type=str, help='validation category')
@@ -42,6 +41,9 @@ def parse_args():
     parser.add_argument('-t', '--threshold', type=float, help='threshold')
     args = parser.parse_args()
 
+    return args
+
+def check_args(args):
     # 引数のチェック
     dataset_list = ['mvtec', 'jelly', 'package']
     assert args.name in dataset_list, f'利用可能なデータセットは{dataset_list}です．'
@@ -51,11 +53,22 @@ def parse_args():
     if args.name == 'jelly':
         assert args.category in const.JELLY_CATEGORIES, f'Jellyにおいて利用可能なクラスは{const.JELLY_CATEGORIES}です'
 
-    return args
 
 
 if __name__ == "__main__":
+    
     args = parse_args()
+    yml_path = './parameter.yml'
+    
+    with open(yml_path, mode='r') as f:
+        param_dict = yaml.safe_load(f)
+
+    for key, value in param_dict.items():
+        if args.__contains__(key):
+            args.__setattr__(key, value)
+    else:
+        print(f"This parameter is somethin wrong: {key}:{value}")
+    
     if args.valid is None:
         args.valid = args.category
     if args.eval:
