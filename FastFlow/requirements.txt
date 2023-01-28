@@ -1,0 +1,8 @@
+torch
+torchvision
+torchaudio
+tqdm==4.64.1
+matplotlib==3.6.2
+pyyaml==6.0
+FrEIA==0.2
+pytorch-ignite==0.4.10
