@@ -172,8 +172,8 @@ class JellyDataset(torch.utils.data.Dataset):
             normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
             normal_list = list(normal_dir.glob('*.jpg'))
 
-        anormal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
-        anormal_list = list(anormal_dir.glob('*.jpg'))
+        anomal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
+        anomal_list = list(anomal_dir.glob('*.jpg'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
         random.shuffle(normal_list)
@@ -187,8 +187,8 @@ class JellyDataset(torch.utils.data.Dataset):
             self.label = [0] * len(self.image_files)
 
             # 異常画像を評価用のデータとして利用
-            self.image_files += anormal_list
-            self.label += [1] * len(anormal_list)
+            self.image_files += anomal_list
+            self.label += [1] * len(anomal_list)
 
             # 異常マスクがある場合には，マスクに対する変換も定義
             if is_mask:
@@ -263,13 +263,14 @@ class PackDataset(torch.utils.data.Dataset):
     PackageDatasetをロードするためのクラス
     """
 
-    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1, valid_ratio: float = 0.2,
+    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_eval: bool = False, is_train: bool = True, test_ratio: float = 0.1, valid_ratio: float = 0.2,
                  is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
         """
         Args:
             root: PackageDatasetのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
             category: クラス名. Ex. 'cut'
             input_size: 事前学習済みモデルの入力画像の形．256と指定された場合は(256, 256)の画像を表す．
+            is_eval: 評価かどうか.評価であればテストデータを利用．
             is_train: 訓練データかどうか
             test_ratio: 全体のデータのうち，何割を評価用に使うか
             valid_ratio: 評価データのうち何割を検証用に使うか(検証データはepoch数の設定などに利用)
@@ -307,13 +308,12 @@ class PackDataset(torch.utils.data.Dataset):
             normal_dir = pathlib.Path(os.path.join(root, category, 'OK_Clip'))
             normal_list = list(normal_dir.glob('*.jpg'))
 
-        anormal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
-        anormal_list = list(anormal_dir.glob('*.jpg'))
+        anomal_dir = pathlib.Path(os.path.join(root, valid_category, 'NG_Clip'))
+        anomal_list = list(anomal_dir.glob('*.jpg'))
 
         # 正常画像をシャッフルし，test_ratioで指定された数の正常画像以外を訓練データとして利用
         random.shuffle(normal_list)
-        # TODO:　ここのシャッフルを直す
-
+        random.shuffle(anomal_list)
         if is_train:
             self.image_files = normal_list[int(len(normal_list) * test_ratio):]
         else:
@@ -323,8 +323,8 @@ class PackDataset(torch.utils.data.Dataset):
             self.label = [0] * len(self.image_files)
 
             # 異常画像を評価用のデータとして利用
-            self.image_files += anormal_list
-            self.label += [1] * len(anormal_list)
+            self.image_files += anomal_list
+            self.label += [1] * len(anomal_list)
 
             # 異常マスクがある場合には，マスクに対する変換も定義
             if is_mask:
@@ -335,7 +335,20 @@ class PackDataset(torch.utils.data.Dataset):
                         # transforms.ToTensor()
                     ]
                 )
-
+            # 検証データの数
+            n_valid = int(len(self.label) * valid_ratio)
+            eval_data_ = list(zip(self.image_files, self.label))
+            random.shuffle(eval_data_)
+            image_files, labels = zip(*eval_data_)
+            # 検証時
+            if not is_eval:
+                self.image_files = list(image_files[:n_valid])
+                self.label = list(labels[:n_valid])
+            # 評価時
+            else:
+                self.image_files = list(image_files[n_valid:])
+                self.label = list(labels[n_valid:])
+                
         self.is_mask = is_mask
         self.is_train = is_train
         self.random = random_sampling
@@ -434,6 +447,7 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             category=args.category,
             valid_category=args.valid,
             input_size=input_size,
+            is_eval=args.eval,
             is_train=True,
             is_mask=args.mask,
             patch_size=args.patchsize,
@@ -485,6 +499,7 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             category=args.category,
             valid_category=args.valid,
             input_size=input_size,
+            is_eval=args.eval,
             is_train=False,
             is_mask=args.mask,
             patch_size=args.patchsize,

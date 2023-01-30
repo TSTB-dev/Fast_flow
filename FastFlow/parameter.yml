@@ -1,4 +1,4 @@
-config: './configs/deit.yaml'
+config: './configs/resnet18.yaml'
 name: package
 data: './data/package_square'
 category: cut
