@@ -263,7 +263,7 @@ class PackDataset(torch.utils.data.Dataset):
     PackageDatasetをロードするためのクラス
     """
 
-    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1,
+    def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_train: bool = True, test_ratio: float = 0.1, valid_ratio: float = 0.2,
                  is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
         """
         Args:
@@ -272,6 +272,7 @@ class PackDataset(torch.utils.data.Dataset):
             input_size: 事前学習済みモデルの入力画像の形．256と指定された場合は(256, 256)の画像を表す．
             is_train: 訓練データかどうか
             test_ratio: 全体のデータのうち，何割を評価用に使うか
+            valid_ratio: 評価データのうち何割を検証用に使うか(検証データはepoch数の設定などに利用)
             is_mask: 異常箇所のマスクがあるかどうか.
             patch_size: 画像をパッチに分割する際のパッチサイズ. input_size % patch_size = 0．パッチは重ならないように分割される．
             random_sampling: パッチ分割した画像をランダムに学習に用いる．ここで，パッチは重なっても良い．

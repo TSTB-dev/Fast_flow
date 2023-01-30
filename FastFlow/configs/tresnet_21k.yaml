@@ -1,0 +1,5 @@
+input_size: (224, 224)
+backbone_name: vit_base_patch16_224_miil_in21k
+flow_step: 8 #20
+hidden_ratio: 1.0 #0.16
+conv3x3_only: False
