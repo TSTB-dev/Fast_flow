@@ -3,5 +3,3 @@ name: package
 data: './data/package_square'
 category: cut
 valid: cut
-eval: True
-checkpoint: 'C:\Users\s2231\PycharmProjects\FastFlow\Fast_flow\FastFlow\results\data\package_square\cut\fastflow\2023-02-01-09-20-19\ckpt\49.pt'
