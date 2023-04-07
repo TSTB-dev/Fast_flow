@@ -364,7 +364,7 @@ class PackDataset(torch.utils.data.Dataset):
                 label_path_list = f.readlines()
             self.cond_dict = {}
             for label_path in label_path_list:
-                self.cond_dict[label_path.split(' ')[0]] = int(label_path.split(' ')[1])
+                self.cond_dict[label_path.split(' ')[0].split('\\')[-1]] = int(label_path.split(' ')[1])
 
             # check cond_dim
             cond_dim = max(self.cond_dict.values()) + 1
@@ -396,7 +396,7 @@ class PackDataset(torch.utils.data.Dataset):
         if self.is_train:
             if self.cond_dim > 0:
                 # (画像，ラベル)
-                cond = self.cond_dict[str(image_file)]
+                cond = self.cond_dict[image_file.name]
                 # convert to one-hot
                 cond = torch.eye(self.cond_dim)[cond]
                 return image, cond

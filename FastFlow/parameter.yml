@@ -1,5 +1,6 @@
-config: './configs/resnet101.yaml'
+config: './configs/wide_resnet50_2.yaml'
 name: package
 data: './data/package_square'
-category: cut
-valid: cut
+category: cropped
+valid: cropped
+cond_dim: 15
