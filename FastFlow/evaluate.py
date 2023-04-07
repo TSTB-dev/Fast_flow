@@ -9,7 +9,6 @@ from ignite.contrib.metrics import ROC_AUC
 from torch.utils.tensorboard import SummaryWriter
 from sklearn import metrics
 import numpy as np
-import matplotlib.pyplot as plt
 
 import constants as const
 import dataset
@@ -44,24 +43,24 @@ def eval_once(args, dataloader: torch.utils.data.DataLoader, model: torch.nn.Mod
     preds_list = []
     elapsed_time_list = []
     for data, targets in tqdm.tqdm(dataloader):
-        data, targets = data.cuda(), targets.cuda()
+        targets = targets.cuda()
+        img, cond = data[0].cuda(), data[1].cuda()
         batch_files = image_files[idx * const.BATCH_SIZE:(idx+1)*const.BATCH_SIZE]
 
         with torch.no_grad():
             start_time = time.perf_counter()
-            ret = model(data)
-            end_time = time.perf_counter()
-            elapsed_time_list.append((end_time - start_time)/const.BATCH_SIZE)
+            ret = model(img, cond)
 
         # outputsは各pixelについて予測した正常である確率に負を掛けたもの
         outputs = ret["anomaly_map"].cpu().detach()
-
+        end_time = time.perf_counter()
+        elapsed_time_list.append((end_time - start_time)/const.BATCH_SIZE)
         # heatmapを保存
         if train_info and save_img:
             if model.patch_size:
                 utils.save_images(save_dir, outputs, batch_files, image_size, patch_size=model.patch_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
             else:
-                    utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
+                utils.save_images(save_dir, outputs, batch_files, image_size, color_mode='rgb', suffix='heatmap', class_name=args.valid)
 
         if is_mask:
             # pixelごとのスコアにより，AUROCを算出．

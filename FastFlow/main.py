@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument(
         "-ckpt", "--checkpoint", type=str, help="path to load checkpoint"
     )
+    parser.add_argument("--cond_dim", type=int, help="dimension of conditional information")
     parser.add_argument("--heatmap", action='store_true', help='saving heatmap on test images')
     parser.add_argument('-t', '--threshold', type=float, help='threshold')
     args = parser.parse_args()

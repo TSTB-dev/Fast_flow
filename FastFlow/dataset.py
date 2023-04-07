@@ -9,6 +9,7 @@ from ast import literal_eval
 import pathlib
 import random
 
+import cv2
 import numpy as np
 from numpy.random import default_rng
 import torch
@@ -264,7 +265,7 @@ class PackDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, category: str, valid_category: str, input_size: int, is_eval: bool = False, is_train: bool = True, test_ratio: float = 0.1, valid_ratio: float = 0.2,
-                 is_mask: bool = False, patch_size: int = None, random_sampling: bool = False, seed: int = 42):
+                 is_mask: bool = False, cond_dim: int = 0, patch_size: int = None, random_sampling: bool = False, seed: int = 42, translate_ratio: float = 0.2):
         """
         Args:
             root: PackageDatasetのルートディレクトリ．このディレクトリ直下に各クラスのデータディレクトリを含む．
@@ -275,9 +276,11 @@ class PackDataset(torch.utils.data.Dataset):
             test_ratio: 全体のデータのうち，何割を評価用に使うか
             valid_ratio: 評価データのうち何割を検証用に使うか(検証データはepoch数の設定などに利用)
             is_mask: 異常箇所のマスクがあるかどうか.
+            cond_dim: 入力画像に紐づける情報がある場合，その入力の次元数．
             patch_size: 画像をパッチに分割する際のパッチサイズ. input_size % patch_size = 0．パッチは重ならないように分割される．
             random_sampling: パッチ分割した画像をランダムに学習に用いる．ここで，パッチは重なっても良い．
             seed: 正常画像から訓練に使うものと評価に使うものを分割する際のランダムシード
+            translate_ratio
 
         Attributes:
             self.image_transform: 画像に対するpreprocessing
@@ -293,7 +296,7 @@ class PackDataset(torch.utils.data.Dataset):
         self.image_transform = transforms.Compose(
             [
                 transforms.Resize(input_size),
-                # transforms.CenterCrop(input_size),
+                # transforms.RandomAffine(degrees=0, translate=[translate_ratio, translate_ratio]),
                 transforms.ToTensor(),
                 transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 
@@ -349,10 +352,23 @@ class PackDataset(torch.utils.data.Dataset):
             else:
                 self.image_files = list(image_files[n_valid:])
                 self.label = list(labels[n_valid:])
-                
+
         self.is_mask = is_mask
         self.is_train = is_train
+        self.cond_dim = cond_dim
         self.random = random_sampling
+
+        if cond_dim > 0:
+            label_file = normal_dir / 'label_list.txt'
+            with open(label_file, 'r') as f:
+                label_path_list = f.readlines()
+            self.cond_dict = {}
+            for label_path in label_path_list:
+                self.cond_dict[label_path.split(' ')[0]] = int(label_path.split(' ')[1])
+
+            # check cond_dim
+            cond_dim = max(self.cond_dict.values()) + 1
+            assert self.cond_dim == cond_dim, f'cond_dim is {cond_dim}'
 
     def __getitem__(self, index):
         """
@@ -378,11 +394,20 @@ class PackDataset(torch.utils.data.Dataset):
 
         # 訓練時
         if self.is_train:
-            return image
+            if self.cond_dim > 0:
+                # (画像，ラベル)
+                cond = self.cond_dict[str(image_file)]
+                # convert to one-hot
+                cond = torch.eye(self.cond_dim)[cond]
+                return image, cond
+            else:
+                return image
 
         # 評価時[マスクがない場合]
         if not self.is_mask:
-            return image, self.label[index]
+            cond_idx = get_test_cond(image_file, const.WHOLE_IMAGE)
+            cond = torch.eye(self.cond_dim)[cond_idx]
+            return (image, cond), self.label[index]
 
         # 評価時[マスクがある場合]
         # 正常画像に対する正解マスク画像の作成, targetは二値画像なので形は(1, input_size, input_size)
@@ -451,13 +476,14 @@ def build_train_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             is_eval=args.eval,
             is_train=True,
             is_mask=args.mask,
+            cond_dim=args.cond_dim,
             patch_size=args.patchsize,
             random_sampling=args.random
         )
     return torch.utils.data.DataLoader(
         train_dataset,
         batch_size=const.BATCH_SIZE,
-        shuffle=True,  # TODO: it is True
+        shuffle=True,
         num_workers=4,
         drop_last=True,
     )
@@ -504,7 +530,8 @@ def build_test_data_loader(args, config: dict) -> torch.utils.data.DataLoader:
             is_train=False,
             is_mask=args.mask,
             patch_size=args.patchsize,
-            random_sampling=args.random
+            random_sampling=args.random,
+            cond_dim=args.cond_dim
         )
     return torch.utils.data.DataLoader(
         test_dataset,
@@ -555,6 +582,65 @@ def patch_split(img: torch.Tensor, patch_size: int, random_sampling: bool = Fals
         patches = patches[sample_idx]
 
     return patches
+
+
+def get_test_cond(filepath, ref_filepath):
+    """テスト画像の条件を取得する．
+    Args:
+        filepath: 
+
+    Returns:
+    
+    Memo:
+    ファイルパスを受け取り，その画像がref_filepathを参照して，どのラベルにあたるのかを返す．
+    """
+    # Read test image
+    img = cv2.imread(str(filepath))
+    img_ref = cv2.imread(str(ref_filepath))
+
+    # strip the upper and lower part of image
+    img_ref = img_ref[900:1850, 300:3400, :]
+    # reshape the image to (640, -1, 3)
+    img_ref = cv2.resize(img_ref, (3400, 640))
+    # stitch the image
+    img_ref = np.concatenate((img_ref, img_ref), axis=1)[:, :4000, :]
+    # Read reference image
+    windows_list = sliding_window(img_ref, step_size=200, window_size=1000)
+    
+    # Calculate label
+    _, _, max_index = image_matching(windows_list, img)
+    return max_index
+
+
+def sliding_window(img, step_size=100, window_size=1000):
+    # slide a window across the image
+    windows_list = []
+    for x in range(0, img.shape[1] - window_size, step_size):
+        reshaped_img = cv2.resize(img[:, x:x + window_size, :], (480, 640))
+        windows_list.append(reshaped_img)
+    return windows_list
+
+
+def image_matching(windows_list, part_label_img):
+    akaze = cv2.AKAZE_create()
+    length_good = []
+    for i in range(len(windows_list)):
+        # 特徴量の検出と特徴量ベクトルの計算
+        kp1, des1 = akaze.detectAndCompute(windows_list[i], None)
+        kp2, des2 = akaze.detectAndCompute(part_label_img, None)
+
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+        ratio = 0.7
+        good = []
+        for m, n in matches:
+            if m.distance < ratio * n.distance:
+                good.append([m])
+        length_good.append(len(good))
+
+        max_index = length_good.index(max(length_good))
+        selected_img = windows_list[max_index]
+    return length_good, selected_img, max_index
 
 
 if __name__ == '__main__':

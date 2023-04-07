@@ -39,8 +39,9 @@ def train_one_epoch(
 
     for step, data in enumerate(dataloader):
         # forward
-        data = data.cuda()
-        ret = model(data)
+        # data -> (img, cond), img: (batch_size, 3, 256, 256), cond: (batch_size, 1)
+        img, cond = data[0].cuda(), data[1].cuda()
+        ret = model(img, cond)
         loss = ret["loss"]
 
         # backward

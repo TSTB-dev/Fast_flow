@@ -11,11 +11,57 @@ from ast import literal_eval
 import FrEIA.framework as Ff
 import FrEIA.modules as Fm
 import timm
+import numpy as np
 import torch
+import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 
 import constants as const
+
+
+class SEModule(torch.nn.Module):
+    """Squeeze and Excitation module
+    """
+    def __init__(self, in_channels: int, hidden_ratio: float, reduction_ratio: float, out_channels: int = None):
+        super(SEModule, self).__init__()
+        if not out_channels:
+            out_channels = int(in_channels * hidden_ratio)
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, padding='same')
+        self.fc1 = torch.nn.Linear(out_channels, int(out_channels * reduction_ratio))
+        self.fc2 = torch.nn.Linear(int(out_channels * reduction_ratio), out_channels)
+
+
+    def forward(self, x):
+
+        # Convolution
+        x = self.conv(x)
+        x1 = x
+
+        # Compute scaled inputs
+        # Global Average Pooling
+        # (B, C, H, W) -> (B, C, 1, 1)
+        x1 = torch.nn.AvgPool2d(kernel_size=(x1.shape[2], x1.shape[3]))(x1)
+
+        # (B, C, 1, 1) -> (B, C)
+        x1 = x1.view(x1.shape[0], x1.shape[1])
+
+        # Linear reduction
+        # (B, C) -> (B, C//reduction_ratio)
+        x1 = torch.nn.ReLU()(self.fc1(x1))
+
+        # Linear reconstruction
+        # (B, C//reduction_ratio) -> (B, C)
+        x1 = torch.nn.Sigmoid()(self.fc2(x1))
+
+        # (B, C) -> (B, C, 1, 1)
+        x1 = x1.view(x1.shape[0], x1.shape[1], 1, 1)
+
+        # Scaling
+        # x: (B, C, H, W) -> (B, C, 1, 1)
+        x2 = x1 * x
+
+        return x2
 
 
 def subnet_conv_func(kernel_size: int, hidden_ratio: float):
@@ -38,7 +84,26 @@ def subnet_conv_func(kernel_size: int, hidden_ratio: float):
     return subnet_conv
 
 
-def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_steps: int, clamp: float = 2.0):
+def subnet_seconv_func(kernel_size: int, hidden_ratio: float = 0.6, reduction_ratio: float = 0.6):
+    """指定されたカーネルサイズとカーネル数を持つ2層の畳み込み層を返す関数を返す．
+    Args:
+        kernel_size: 畳み込み層のカーネルサイズ
+        reduction_ratio: 入力チャンネル数に対しての隠れ層のチャンネル数[SE-BLock]
+        hidden_ratio: 入力チャンネル数に対しての隠れ層のチャンネル数[Conv-BLock]
+
+    Returns:
+        subnet_conv: 入力チャンネル数と出力チャンネル数を受け取って2層の畳み込み層を返す関数
+    """
+    def subnet_conv(in_channels: int, out_channels: int):
+        return nn.Sequential(
+            SEModule(in_channels, hidden_ratio, reduction_ratio),
+            SEModule(in_channels, hidden_ratio, reduction_ratio, out_channels),
+        )
+
+    return subnet_conv
+
+
+def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_steps: int, clamp: float = 2.0, cond_dim: int = 0):
     """2D-Normalizing Flowを適用する．
     Args:
         input_chw: 入力される特徴マップの形: (C, H, W). C: Channel, H: Height, W: Width
@@ -46,11 +111,12 @@ def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_
         hidden_ratio: 特徴マップのチャンネル数の拡張率.
         flow_steps: Flowの数．
         clamp: スケーリングパラメータsの値域を指数関数に適用する前に，[-clamp, clamp]に制限
-        feature_size: 特徴マップのサイズ
+        cond_dim: 画像に対する条件付き入力の次元数．
 
     Returns:
         nodes: Normalizing Flow全体のモデル．通常のtorch.nn.Moduleのように扱える．
     """
+    c, h, w = input_chw
     nodes = Ff.SequenceINN(*input_chw)
     for i in range(flow_steps):
         if i % 2 == 1 and not conv3x3_only:
@@ -62,6 +128,8 @@ def nf_fast_flow(input_chw: list, conv3x3_only: bool, hidden_ratio: float, flow_
             subnet_constructor=subnet_conv_func(kernel_size, hidden_ratio),
             affine_clamping=clamp,
             permute_soft=False,
+            cond=0,
+            cond_shape=(cond_dim, h, w)
         )
     return nodes
 
@@ -76,6 +144,7 @@ class FastFlow(nn.Module):
         hidden_ratio: float = 1.0,
         patch_size: int = None,
         random_sampling: bool = False,
+        cond_dim: int = 0,
     ):
         """
         Args:
@@ -86,6 +155,7 @@ class FastFlow(nn.Module):
             hidden_ratio: 特徴マップのチャンネル数の拡張率.
             patch_size: パッチに分割されている場合のパッチサイズ
             random_sampling: パッチをランダムに選択して学習する．
+            cond_dim: 条件入力の次元数
         """
         super(FastFlow, self).__init__()
         assert (
@@ -98,20 +168,23 @@ class FastFlow(nn.Module):
         self.patch_size = patch_size
 
         # 事前学習済みモデルの読み込み[ViT]
-        if backbone_name in [const.BACKBONE_CAIT, const.BACKBONE_DEIT, const.BACKBONE_DEIT_224, const.BACKBONE_DEITS_224, const.BACKBONE_MOBILEVIT_V2]:
+        if backbone_name in [const.BACKBONE_CAIT, const.BACKBONE_DEIT, const.BACKBONE_DEIT_224, const.BACKBONE_DEITS_224, const.BACKBONE_MOBILEVIT_V2, const.BACKBONE_SWIN_BASE_PATCH4_WINDOWS7_224]:
             self.feature_extractor = timm.create_model(backbone_name, pretrained=True)
             channels = [self.feature_extractor.num_features]  # [self.feature_extractor.feature_info[-1]['num_chs']]
             scales = [16]
 
         # 事前学習済みモデルの読み込み[ResNet], timm.create_modelの詳細は[https://rwightman.github.io/pytorch-image-models/feature_extraction/]
         else:
-            # ResNetの場合，複数スケールの特徴マップをlistで取得, FastFlow原論文の表7参照[https://arxiv.org/abs/2111.07677]
-            self.feature_extractor = timm.create_model(
-                backbone_name,
-                pretrained=True,
-                features_only=True,
-                out_indices=[1, 2, 3],
-            )
+            if backbone_name in [const.BACKBONE_EFFICIENTNET]:
+                self.feature_extractor = torchvision.models.efficientnet_b6(weights='IMAGENET1K_V1')
+            else:
+                # ResNetの場合，複数スケールの特徴マップをlistで取得, FastFlow原論文の表7参照[https://arxiv.org/abs/2111.07677]
+                self.feature_extractor = timm.create_model(
+                    backbone_name,
+                    pretrained=True,
+                    features_only=True,
+                    out_indices=[1, 2, 3],
+                )
 
             # channels: 各特徴マップのチャンネル数, scales: 各特徴マップの入力画像のスケール縮小率
             channels = self.feature_extractor.feature_info.channels()
@@ -136,28 +209,31 @@ class FastFlow(nn.Module):
             param.requires_grad = False
 
         # Flow部分の定義．特徴マップが複数ある場合はその個数分Flowを定義．
-        # TODO: チャンネル数を修正, preconcat
         self.nf_flows = nn.ModuleList()
-        # self.nf_flows.append(
-        #     nf_fast_flow(
-        #         [64, 128, 256],
-        #         conv3x3_only=conv3x3_only,
-        #         hidden_ratio=hidden_ratio,
-        #         flow_steps=flow_steps,
-        #     )
-        # )
         for in_channels, scale in zip(channels, scales):
-            self.nf_flows.append(
-                nf_fast_flow(
-                    [in_channels, int(input_size[0] / scale), int(input_size[1] / scale)],
-                    conv3x3_only=conv3x3_only,
-                    hidden_ratio=hidden_ratio,
-                    flow_steps=flow_steps
+            if cond_dim > 0:
+                self.nf_flows.append(
+                    nf_fast_flow(
+                        [in_channels, int(input_size[0] / scale), int(input_size[1] / scale)],
+                        conv3x3_only=conv3x3_only,
+                        hidden_ratio=hidden_ratio,
+                        flow_steps=flow_steps,
+                        cond_dim=cond_dim
+                    )
                 )
-            )
+            else:
+                self.nf_flows.append(
+                    nf_fast_flow(
+                        [in_channels, int(input_size[0] / scale), int(input_size[1] / scale)],
+                        conv3x3_only=conv3x3_only,
+                        hidden_ratio=hidden_ratio,
+                        flow_steps=flow_steps,
+                        cond_dim=cond_dim
+                    )
+                )
         self.input_size = input_size
 
-    def forward(self, x):
+    def forward(self, x, cond=None):
         # 事前学習済みモデルを評価モードにする．BatchNormなど訓練時と評価時で挙動の変わる層があるため．
         self.feature_extractor.eval()
 
@@ -263,6 +339,26 @@ class FastFlow(nn.Module):
                 feature = self.feature_extractor.forward_features(x)
                 features = [feature]
 
+        # SwinTransformerの場合
+        elif isinstance(self.feature_extractor, timm.models.swin_transformer.SwinTransformer):
+            # パッチに分割し，パッチごとの埋め込みベクトルを獲得
+            # (B, N_g, C, P, P) -> (B, N_g, D, P, P), N_g: 画像全体をパッチに分割したときのパッチ数, D: 埋め込みベクトルの次元, P: ViT内部でのパッチ分割処理におけるパッチサイズ
+            features = []
+            if self.patch_size:
+                for i in range(x.shape[1]):
+                    # -> (B, D, P, P)
+                    feature = self.feature_extractor.forward_features(x[:, i])
+                    features.append(feature)
+                features = [torch.stack(features, dim=0).transpose(0, 1)]
+            else:
+                feature = self.feature_extractor.forward_features(x)
+                # (B, D, H'*W') -> (B, D, H', W')
+                feature = feature.transpose(1, 2)
+                feature = feature.view(feature.shape[0], feature.shape[1], int(np.sqrt(feature.shape[2])),
+                                       int(np.sqrt(feature.shape[2])))
+
+                features = [feature]
+
         # 事前学習済みモデルがCaiTの場合
         elif isinstance(self.feature_extractor, timm.models.cait.Cait):
             x = self.feature_extractor.patch_embed(x)
@@ -327,7 +423,7 @@ class FastFlow(nn.Module):
                 # outputs: (M], N], D, P, P)
                 output_patch = []
                 for j in range(feature.shape[1]):
-                    output, log_jac_dets = self.nf_flows[i](feature[:, j])
+                    output, log_jac_dets = self.nf_flows[i](feature[:, j], c=[cond])
                     loss += torch.mean(
                         0.5 * torch.sum(output ** 2, dim=(1, 2, 3)) - log_jac_dets
                     )
@@ -339,7 +435,12 @@ class FastFlow(nn.Module):
                 # output: (B, in_channels, H', W'), in_channels:入力チャンネル数, H', W':特徴マップの幅と高さ
                 # log_jac_dets: (B, )
                 # (B, COND_DIM)
-                output, log_jac_dets = self.nf_flows[i](feature)
+
+                # 条件入力を特徴マップと同じ空間サイズに拡張
+                cond = cond.view(cond.shape[0], cond.shape[1], 1, 1)
+                cond_expanded = cond.repeat(1, 1, feature.shape[2], feature.shape[3])
+
+                output, log_jac_dets = self.nf_flows[i](feature, c=[cond_expanded])
                 loss += torch.mean(
                     0.5 * torch.sum(output**2, dim=(1, 2, 3)) - log_jac_dets
                 )
@@ -413,6 +514,7 @@ def build_model(config: dict, args) -> torch.nn.Module:
         hidden_ratio=config["hidden_ratio"],
         patch_size=args.patchsize,
         random_sampling=args.random,
+        cond_dim=args.cond_dim
     )
 
     # 学習可能なパラメータの数を取得
